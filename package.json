@@ -1,10 +1,25 @@
 {
   "name": "pawn-helper",
   "displayName": "Pawn Helper",
-  "description": "Make Live Russia Great Again",
+  "description": "Pawn language helpers for color literals and workspace symbol navigation.",
   "version": "0.0.1",
   "publisher": "saintantony",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/saintantony/pawn-helper.git"
+  },
+  "homepage": "https://gitlab.com/saintantony/pawn-helper",
+  "bugs": {
+    "url": "https://gitlab.com/saintantony/pawn-helper/-/issues"
+  },
+  "keywords": [
+    "pawn",
+    "samp",
+    "open.mp",
+    "language",
+    "colors"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -94,6 +109,8 @@
   },
   "scripts": {
     "check": "node --check extension.js",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies",
     "install:local": "powershell -ExecutionPolicy Bypass -File ./install.ps1"
   }
 }

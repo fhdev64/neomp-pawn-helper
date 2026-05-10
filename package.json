@@ -1,0 +1,99 @@
+{
+  "name": "pawn-helper",
+  "displayName": "Pawn Helper",
+  "description": "Make Live Russia Great Again",
+  "version": "0.0.1",
+  "publisher": "saintantony",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:pawn",
+    "workspaceContains:**/*.pwn"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "pawn",
+        "aliases": [
+          "Pawn",
+          "pawn"
+        ],
+        "extensions": [
+          ".pwn",
+          ".inc",
+          ".module"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "livePawnHelper.reindex",
+        "title": "Pawn Helper: Reindex Workspace"
+      }
+    ],
+    "configuration": {
+      "title": "Pawn Helper",
+      "properties": {
+        "livePawnHelper.colors.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight Pawn color literals and rgb/rgba color constants."
+        },
+        "livePawnHelper.definitions.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable go-to-definition for Pawn symbols indexed by this extension."
+        },
+        "livePawnHelper.index.include": {
+          "type": "array",
+          "default": [
+            "gamemodes/**/*.{pwn,inc,module}",
+            "pawno/include/**/*.{pwn,inc,module}",
+            "*.{pwn,inc,module}"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Workspace globs used to index Pawn files."
+        },
+        "livePawnHelper.index.exclude": {
+          "type": "array",
+          "default": [
+            "**/.git/**",
+            "**/.vs/**",
+            "**/node_modules/**",
+            "**/vscode-pawn-helper/**"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Workspace globs excluded from Pawn indexing."
+        },
+        "livePawnHelper.index.maxFiles": {
+          "type": "number",
+          "default": 20000,
+          "minimum": 100,
+          "description": "Maximum number of Pawn files to index."
+        },
+        "livePawnHelper.index.debounceMs": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 100,
+          "description": "Delay before rebuilding the index after document or workspace changes."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check extension.js",
+    "install:local": "powershell -ExecutionPolicy Bypass -File ./install.ps1"
+  }
+}

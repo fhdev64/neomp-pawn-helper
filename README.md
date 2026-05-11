@@ -9,6 +9,7 @@ Pawn Helper adds lightweight editor support for Pawn projects in Visual Studio C
 - Highlights named color defines such as `#define rgbaRed 0xFF0000AA`.
 - Provides go to definition for indexed Pawn symbols.
 - Indexes functions, globals, defines, enum members, and dialog declarations.
+- Supports paired navigation between `global` implementations and `foreign` declarations.
 - Adds `Pawn Helper: Reindex Workspace` for manually rebuilding the workspace index.
 
 ## Settings

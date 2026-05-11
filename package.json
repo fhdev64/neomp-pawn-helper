@@ -2,7 +2,7 @@
   "name": "pawn-helper",
   "displayName": "Pawn Helper",
   "description": "Pawn language helpers for color literals and workspace symbol navigation.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "saintantony",
   "license": "UNLICENSED",
   "repository": {

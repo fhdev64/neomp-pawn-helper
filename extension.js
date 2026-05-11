@@ -23,10 +23,12 @@ const SYMBOL_KIND_RANK = new Map([
     ["dialog", 0],
     ["enum-member", 1],
     ["define", 2],
-    ["function", 3],
-    ["global", 4],
-    ["enum", 5],
-    ["local", 6]
+    ["global-function", 3],
+    ["function", 4],
+    ["foreign", 5],
+    ["global", 6],
+    ["enum", 7],
+    ["local", 8]
 ]);
 
 function activate(context) {
@@ -335,8 +337,17 @@ class PawnDefinitionProvider {
 
         if (context.tag === "Dialog") {
             indexedSymbols = this.index.findDialog(word);
+        } else if (context.declarationKind === "global" || context.declarationKind === "foreign") {
+            const declarationName = context.declarationName || word;
+            const targetKind = context.declarationKind === "global" ? "foreign" : "global-function";
+            indexedSymbols = this.index.findSymbol(declarationName).filter((record) => record.kind === targetKind);
         } else {
             indexedSymbols = this.index.findSymbol(word);
+            const globalFunctions = indexedSymbols.filter((record) => record.kind === "global-function");
+            if (globalFunctions.length) {
+                indexedSymbols = globalFunctions;
+            }
+
             if (context.tag) {
                 const dialogSymbols = this.index.findDialog(word);
                 indexedSymbols = dialogSymbols.concat(indexedSymbols);
@@ -451,6 +462,11 @@ function scanPawnText(uri, text, symbols, dialogs, colors) {
                 addRecord(dialogs, record);
             }
 
+            const externalFunctionRecord = parseGlobalForeignFunction(stripped, uri, lineNumber);
+            if (externalFunctionRecord) {
+                addRecord(symbols, externalFunctionRecord);
+            }
+
             const functionRecord = parseFunctionDefinition(stripped, code, uri, lineNumber);
             if (functionRecord) {
                 addRecord(symbols, functionRecord);
@@ -530,6 +546,22 @@ function parseFunctionDefinition(stripped, code, uri, lineNumber) {
 
     const nameIndex = stripped.indexOf(name, match.index);
     return makeRecord(name, "function", uri, lineNumber, nameIndex, nameIndex + name.length);
+}
+
+function parseGlobalForeignFunction(stripped, uri, lineNumber) {
+    const match = stripped.match(/^\s*(global|foreign)\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*)\s*:\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+    if (!match) {
+        return undefined;
+    }
+
+    const keyword = match[1];
+    const name = match[2];
+    if (!name || CONTROL_WORDS.has(name)) {
+        return undefined;
+    }
+
+    const nameIndex = stripped.indexOf(name, match.index + keyword.length);
+    return makeRecord(name, keyword === "global" ? "global-function" : "foreign", uri, lineNumber, nameIndex, nameIndex + name.length);
 }
 
 function parseGlobalDeclarations(stripped, uri, lineNumber) {
@@ -639,9 +671,33 @@ function getReferenceContext(document, wordRange) {
     const line = document.lineAt(wordRange.start.line).text;
     const beforeWord = line.slice(0, wordRange.start.character);
     const tagMatch = beforeWord.match(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*$/);
+    const externalDeclaration = getGlobalForeignDeclarationContext(line, wordRange);
     return {
-        tag: tagMatch ? tagMatch[1] : undefined
+        tag: tagMatch ? tagMatch[1] : undefined,
+        declarationKind: externalDeclaration ? externalDeclaration.kind : undefined,
+        declarationName: externalDeclaration ? externalDeclaration.name : undefined
     };
+}
+
+function getGlobalForeignDeclarationContext(line, wordRange) {
+    const match = line.match(/^\s*(global|foreign)\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*)\s*:\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+    if (!match) {
+        return undefined;
+    }
+
+    const keyword = match[1];
+    const name = match[2];
+    const keywordStart = line.indexOf(keyword, match.index);
+    const nameStart = line.indexOf(name, keywordStart + keyword.length);
+    const cursorStart = wordRange.start.character;
+    const cursorEnd = wordRange.end.character;
+    const onKeyword = cursorStart >= keywordStart && cursorEnd <= keywordStart + keyword.length;
+    const onName = cursorStart >= nameStart && cursorEnd <= nameStart + name.length;
+    if (!onKeyword && !onName) {
+        return undefined;
+    }
+
+    return { kind: keyword, name };
 }
 
 function addSymbol(map, name, kind, uri, lineNumber, startCharacter, endCharacter) {

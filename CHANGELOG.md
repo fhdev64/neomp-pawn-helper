@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.3
+
+- Color highlighting now recognizes any named `#define` that contains a color value.
+- Added support for bare `RRGGBB` and `RRGGBBAA` color values inside `#define` bodies.
+- Updated color highlighting documentation and setting descriptions.
+
 ## 0.0.2
 
 - Added `global`/`foreign` navigation for exported Pawn functions.

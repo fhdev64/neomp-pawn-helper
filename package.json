@@ -2,7 +2,7 @@
   "name": "pawn-helper",
   "displayName": "Pawn Helper",
   "description": "Pawn language helpers for color literals and workspace symbol navigation.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "saintantony",
   "license": "UNLICENSED",
   "repository": {
@@ -60,7 +60,7 @@
         "livePawnHelper.colors.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Highlight Pawn color literals and rgb/rgba color constants."
+          "description": "Highlight Pawn color literals and named defines that contain color values."
         },
         "livePawnHelper.definitions.enabled": {
           "type": "boolean",

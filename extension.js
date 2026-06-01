@@ -414,11 +414,9 @@ function scanPawnText(uri, text, symbols, dialogs, colors) {
             const nameIndex = stripped.indexOf(name, defineMatch.index);
             addSymbol(symbols, name, "define", uri, lineNumber, nameIndex, nameIndex + name.length);
 
-            if (/^rgba?[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-                const color = parseColorFromText(defineMatch[2]);
-                if (color) {
-                    colors.set(name, color);
-                }
+            const color = parseColorFromText(defineMatch[2], true);
+            if (color) {
+                colors.set(name, color);
             }
         }
 
@@ -487,8 +485,9 @@ function collectColorDecorations(document, index) {
 
     addRegexColorDecorations(document, text, /\b0x([0-9A-Fa-f]{6})([0-9A-Fa-f]{2})?\b/g, 1, decorations);
     addRegexColorDecorations(document, text, /\{([0-9A-Fa-f]{6})\}/g, 1, decorations);
+    addDefineBareColorDecorations(document, text, decorations);
 
-    const namedColorRe = /\brgba?[A-Za-z_][A-Za-z0-9_]*\b/g;
+    const namedColorRe = /\b[A-Za-z_][A-Za-z0-9_]*\b/g;
     let match;
     while ((match = namedColorRe.exec(text)) !== null) {
         const name = match[0];
@@ -501,6 +500,38 @@ function collectColorDecorations(document, index) {
     }
 
     return decorations;
+}
+
+function addDefineBareColorDecorations(document, text, decorations) {
+    const lines = getLines(text);
+    const commentState = { inBlock: false };
+
+    for (const item of lines) {
+        const stripped = stripComments(item.text, commentState);
+        const defineMatch = stripped.match(/^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?\b(.*)$/);
+        if (!defineMatch) {
+            continue;
+        }
+
+        const body = defineMatch[2];
+        const bodyOffset = item.offset + defineMatch.index + defineMatch[0].length - body.length;
+        const bareColorRe = /(?:^|[^0-9A-Fa-fA-Za-z_{])([0-9A-Fa-f]{6})(?:[0-9A-Fa-f]{2})?(?![0-9A-Fa-fA-Za-z_}])/g;
+        let match;
+        while ((match = bareColorRe.exec(body)) !== null) {
+            const color = normalizeHex(match[1]);
+            if (!color) {
+                continue;
+            }
+
+            const startOffset = bodyOffset + match.index + match[0].indexOf(match[1]);
+            addDecoration(
+                decorations,
+                color,
+                document.positionAt(startOffset),
+                document.positionAt(startOffset + match[1].length)
+            );
+        }
+    }
 }
 
 function addRegexColorDecorations(document, text, regex, colorGroup, decorations) {
@@ -757,7 +788,7 @@ function compareSymbolRecords(a, b) {
     return a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character;
 }
 
-function parseColorFromText(text) {
+function parseColorFromText(text, allowBareHex) {
     const braceMatch = text.match(/\{([0-9A-Fa-f]{6})\}/);
     if (braceMatch) {
         return normalizeHex(braceMatch[1]);
@@ -766,6 +797,13 @@ function parseColorFromText(text) {
     const hexMatch = text.match(/\b0x([0-9A-Fa-f]{6})(?:[0-9A-Fa-f]{2})?\b/);
     if (hexMatch) {
         return normalizeHex(hexMatch[1]);
+    }
+
+    if (allowBareHex) {
+        const bareHexMatch = text.match(/(?:^|[^0-9A-Fa-fA-Za-z_{])([0-9A-Fa-f]{6})(?:[0-9A-Fa-f]{2})?(?![0-9A-Fa-fA-Za-z_}])/);
+        if (bareHexMatch) {
+            return normalizeHex(bareHexMatch[1]);
+        }
     }
 
     return undefined;

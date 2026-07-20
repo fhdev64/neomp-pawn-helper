@@ -2,7 +2,7 @@
   "name": "pawn-helper",
   "displayName": "Pawn Helper",
   "description": "Pawn language helpers for color literals and workspace symbol navigation.",
-  "version": "0.0.3",
+  "version": "1.0.2",
   "publisher": "saintantony",
   "license": "UNLICENSED",
   "repository": {
@@ -28,9 +28,9 @@
     "Other"
   ],
   "main": "./extension.js",
+  "icon": "icon.png",
   "activationEvents": [
-    "onLanguage:pawn",
-    "workspaceContains:**/*.pwn"
+    "onLanguage:pawn"
   ],
   "contributes": {
     "languages": [
@@ -52,6 +52,10 @@
       {
         "command": "livePawnHelper.reindex",
         "title": "Pawn Helper: Reindex Workspace"
+      },
+      {
+        "command": "livePawnHelper.generateEnumFromCreateTable",
+        "title": "Pawn Helper: Generate Enum from CREATE TABLE"
       }
     ],
     "configuration": {
@@ -62,10 +66,30 @@
           "default": true,
           "description": "Highlight Pawn color literals and named defines that contain color values."
         },
+        "livePawnHelper.colors.variables.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight uses of named color variables and defines separately from raw color literals."
+        },
+        "livePawnHelper.constants.valueHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline value hints for named #define, const, and enum constants with simple numeric values."
+        },
         "livePawnHelper.definitions.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable go-to-definition for Pawn symbols indexed by this extension."
+        },
+        "livePawnHelper.sql.highlighting.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight SQL keywords and mysql_format placeholders inside SQL string literals."
+        },
+        "livePawnHelper.sql.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when mysql_format placeholder counts do not match provided arguments."
         },
         "livePawnHelper.index.include": {
           "type": "array",
@@ -103,6 +127,12 @@
           "default": 1200,
           "minimum": 100,
           "description": "Delay before rebuilding the index after document or workspace changes."
+        },
+        "livePawnHelper.index.documentDebounceMs": {
+          "type": "number",
+          "default": 250,
+          "minimum": 50,
+          "description": "Delay before updating the index for the edited Pawn document."
         }
       }
     }

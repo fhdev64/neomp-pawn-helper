@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.4
+
+- Added semantic highlighting for namespaced Pawn calls so `Namespace::Function` no longer colors `::` as a tag separator.
+- Added context-aware go-to-definition for `this.Method()` calls created by `#define this. THIS__(Tag)`.
+- Added go-to-definition aliases from generated `Tag_Method` calls to source `Tag::Method` functions.
+
 ## 1.0.2
 
 - Made Ctrl+Click highlight the full `Namespace::Function` source range.

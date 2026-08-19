@@ -2,7 +2,7 @@
   "name": "pawn-helper",
   "displayName": "Pawn Helper",
   "description": "Pawn language helpers for color literals and workspace symbol navigation.",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "publisher": "saintantony",
   "license": "UNLICENSED",
   "repository": {
@@ -48,6 +48,11 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "configurationDefaults": {
+      "[pawn]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    },
     "commands": [
       {
         "command": "livePawnHelper.reindex",

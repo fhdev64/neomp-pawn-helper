@@ -11,6 +11,7 @@ Pawn Helper adds lightweight editor support for Pawn projects in Visual Studio C
 - Adds Ctrl+Click links for paths after `#include`.
 - Shows inline value hints next to uses of named `#define`, `const`, and enum constants with simple integer or float values.
 - Provides go to definition for indexed Pawn symbols, including `Namespace::Function` names.
+- Semantically highlights namespaced symbols so `Namespace::Function` is not confused with `tag:Name`.
 - Indexes functions, globals, defines, enum members, and dialog declarations.
 - Supports paired navigation between `global` implementations and `foreign` declarations.
 - Highlights SQL keywords and `mysql_format` placeholders such as `%i`, `%e`, `%d`, and `%s` inside SQL string literals.

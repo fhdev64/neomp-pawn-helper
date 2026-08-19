@@ -7,13 +7,18 @@ const { TextDecoder } = require("util");
 const PAWN_IDENTIFIER_SOURCE = "[A-Za-z_][A-Za-z0-9_]*";
 const PAWN_SYMBOL_SOURCE = `${PAWN_IDENTIFIER_SOURCE}(?:::${PAWN_IDENTIFIER_SOURCE})?`;
 const PAWN_SYMBOL_RE = new RegExp(PAWN_SYMBOL_SOURCE, "g");
+const PAWN_NAMESPACE_RE = new RegExp(`\\b(${PAWN_IDENTIFIER_SOURCE})::(${PAWN_IDENTIFIER_SOURCE})\\b`, "g");
 const PAWN_OPTIONAL_TAG_SOURCE = `(?:(?:${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*)?`;
 const FUNCTION_KEYWORDS_SOURCE = "stock|static|public|forward|native|hook|timer|ptask|task";
 const EXTERNAL_FUNCTION_KEYWORDS_SOURCE = "global|foreign";
 const FUNCTION_DEFINITION_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\([^;]*\\)\\s*(?:\\{|$)`);
 const EXTERNAL_FUNCTION_RE = new RegExp(`^\\s*(${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
 const FUNCTION_CONTEXT_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE}|${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
+const OOP_THIS_DEFINE_RE = new RegExp(`^\\s*#\\s*define\\s+this\\.\\s+THIS__\\s*\\(\\s*(${PAWN_IDENTIFIER_SOURCE})\\s*\\)`);
+const OOP_THIS_UNDEF_RE = /^\s*#\s*undef\s+this\b/;
 const PAWN_FILE_DECODER = new TextDecoder("windows-1251");
+const PAWN_SEMANTIC_TYPES = ["namespace", "function"];
+const PAWN_SEMANTIC_LEGEND = new vscode.SemanticTokensLegend(PAWN_SEMANTIC_TYPES, []);
 const CONTROL_WORDS = new Set([
     "assert",
     "break",
@@ -96,12 +101,13 @@ function activate(context) {
     const numericValueHints = new NumericValueHintProvider(index);
     const sqlHighlighter = new SqlHighlighter();
     const mysqlDiagnostics = new MysqlDiagnostics();
+    const semanticProvider = new PawnSemanticProvider();
     const definitionProvider = new PawnDefinitionProvider(index);
     const referenceProvider = new PawnReferenceProvider(index);
     const includeLinkProvider = new PawnIncludeLinkProvider();
     const sqlSnippetCompletionProvider = new SqlSnippetCompletionProvider();
 
-    context.subscriptions.push(index, highlighter, numericValueHints, sqlHighlighter, mysqlDiagnostics, definitionProvider, referenceProvider, includeLinkProvider, sqlSnippetCompletionProvider);
+    context.subscriptions.push(index, highlighter, numericValueHints, sqlHighlighter, mysqlDiagnostics, semanticProvider, definitionProvider, referenceProvider, includeLinkProvider, sqlSnippetCompletionProvider);
     context.subscriptions.push(vscode.commands.registerCommand("livePawnHelper.reindex", async () => {
         await index.rebuild();
         highlighter.updateVisibleEditors();
@@ -577,6 +583,31 @@ class SqlHighlighter {
     }
 }
 
+class PawnSemanticProvider {
+    constructor() {
+        this.disposable = vscode.languages.registerDocumentSemanticTokensProvider(
+            [
+                { language: "pawn" },
+                { pattern: "**/*.{pwn,inc,module}" }
+            ],
+            this,
+            PAWN_SEMANTIC_LEGEND
+        );
+    }
+
+    dispose() {
+        this.disposable.dispose();
+    }
+
+    provideDocumentSemanticTokens(document) {
+        if (!isPawnDocument(document)) {
+            return new vscode.SemanticTokens(new Uint32Array());
+        }
+
+        return buildPawnSemanticTokens(document);
+    }
+}
+
 class MysqlDiagnostics {
     constructor() {
         this.collection = vscode.languages.createDiagnosticCollection("pawn-helper-mysql");
@@ -703,6 +734,16 @@ class PawnDefinitionProvider {
 
         const word = document.getText(wordRange);
         const context = getReferenceContext(document, wordRange);
+        const oopContext = getThisMethodCallContext(document, wordRange, word);
+        if (oopContext) {
+            const oopSymbols = this.findOopMethodDefinitions(oopContext.tag, oopContext.method);
+            if (oopSymbols.length) {
+                return uniqueLocations(oopSymbols)
+                    .sort(compareSymbolRecords)
+                    .map((record) => makeDefinitionLink(record, oopContext.originRange));
+            }
+        }
+
         const localSymbols = findLocalDefinitions(document, word, position);
         const callbackReferences = context.functionDeclarationName === word ? this.index.findMysqlCallback(word) : [];
         let indexedSymbols = [];
@@ -714,7 +755,11 @@ class PawnDefinitionProvider {
             const targetKind = context.declarationKind === "global" ? "foreign" : "global-function";
             indexedSymbols = this.index.findSymbol(declarationName).filter((record) => record.kind === targetKind);
         } else {
-            indexedSymbols = this.index.findSymbol(word);
+            indexedSymbols = this.findNamespacedAliasDefinitions(word);
+            if (!indexedSymbols.length) {
+                indexedSymbols = this.index.findSymbol(word);
+            }
+
             const globalFunctions = indexedSymbols.filter((record) => record.kind === "global-function");
             if (globalFunctions.length) {
                 indexedSymbols = globalFunctions;
@@ -734,6 +779,24 @@ class PawnDefinitionProvider {
         return uniqueLocations(candidates)
             .sort(compareSymbolRecords)
             .map((record) => makeDefinitionLink(record, wordRange));
+    }
+
+    findOopMethodDefinitions(tag, method) {
+        const namespaced = this.index.findSymbol(`${tag}::${method}`);
+        if (namespaced.length) {
+            return namespaced;
+        }
+
+        return this.index.findSymbol(`${tag}_${method}`);
+    }
+
+    findNamespacedAliasDefinitions(word) {
+        const alias = getNamespacedAliasName(word);
+        if (!alias) {
+            return [];
+        }
+
+        return this.index.findSymbol(alias);
     }
 }
 
@@ -1174,6 +1237,33 @@ function collectNumericValueHints(document, range, index) {
     }
 
     return hints;
+}
+
+function buildPawnSemanticTokens(document) {
+    const builder = new vscode.SemanticTokensBuilder(PAWN_SEMANTIC_LEGEND);
+    const lines = getLines(document.getText());
+    const commentState = { inBlock: false };
+
+    for (const item of lines) {
+        const code = maskStrings(stripComments(item.text, commentState));
+        addPawnNamespaceTokens(builder, code, item.line);
+    }
+
+    return builder.build();
+}
+
+function addPawnNamespaceTokens(builder, line, lineNumber) {
+    PAWN_NAMESPACE_RE.lastIndex = 0;
+
+    let match;
+    while ((match = PAWN_NAMESPACE_RE.exec(line)) !== null) {
+        const namespace = match[1];
+        const name = match[2];
+        const nameStart = match.index + namespace.length + 2;
+
+        builder.push(lineNumber, match.index, namespace.length + 2, 0, 0);
+        builder.push(lineNumber, nameStart, name.length, 1, 0);
+    }
 }
 
 function isNumericValueDeclaration(numericValue, uri, start, end) {
@@ -1738,6 +1828,83 @@ function getPawnSymbolRangeAtPosition(document, position) {
     }
 
     return undefined;
+}
+
+function getThisMethodCallContext(document, wordRange, word) {
+    const line = document.lineAt(wordRange.start.line).text;
+    const tag = getActiveThisTag(document, wordRange.start.line);
+    if (!tag) {
+        return undefined;
+    }
+
+    if (word === "this") {
+        const afterWord = line.slice(wordRange.end.character);
+        const methodMatch = afterWord.match(/^\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+        if (!methodMatch) {
+            return undefined;
+        }
+
+        const method = methodMatch[1];
+        const methodStart = wordRange.end.character + methodMatch[0].indexOf(method);
+        return {
+            tag,
+            method,
+            originRange: new vscode.Range(
+                wordRange.start,
+                new vscode.Position(wordRange.start.line, methodStart + method.length)
+            )
+        };
+    }
+
+    const beforeWord = line.slice(0, wordRange.start.character);
+    if (!/\bthis\s*\.\s*$/.test(beforeWord)) {
+        return undefined;
+    }
+
+    const afterWord = line.slice(wordRange.end.character);
+    if (!/^\s*\(/.test(afterWord)) {
+        return undefined;
+    }
+
+    return {
+        tag,
+        method: word,
+        originRange: wordRange
+    };
+}
+
+function getActiveThisTag(document, lineNumber) {
+    const commentState = { inBlock: false };
+    let tag;
+
+    for (let line = 0; line <= lineNumber; line++) {
+        const stripped = stripComments(document.lineAt(line).text, commentState);
+
+        if (OOP_THIS_UNDEF_RE.test(stripped)) {
+            tag = undefined;
+            continue;
+        }
+
+        const defineMatch = stripped.match(OOP_THIS_DEFINE_RE);
+        if (defineMatch) {
+            tag = defineMatch[1];
+        }
+    }
+
+    return tag;
+}
+
+function getNamespacedAliasName(word) {
+    if (word.includes("::")) {
+        return undefined;
+    }
+
+    const underscore = word.indexOf("_");
+    if (underscore <= 0 || underscore >= word.length - 1) {
+        return undefined;
+    }
+
+    return `${word.slice(0, underscore)}::${word.slice(underscore + 1)}`;
 }
 
 function getReferenceContext(document, wordRange) {

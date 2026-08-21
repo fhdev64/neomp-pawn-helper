@@ -14,10 +14,13 @@ const EXTERNAL_FUNCTION_KEYWORDS_SOURCE = "global|foreign";
 const FUNCTION_DEFINITION_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\([^;]*\\)\\s*(?:\\{|$)`);
 const EXTERNAL_FUNCTION_RE = new RegExp(`^\\s*(${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
 const FUNCTION_CONTEXT_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE}|${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
+const PAWN_CLASS_DECL_RE = new RegExp(`^\\s*class\\s+(${PAWN_IDENTIFIER_SOURCE})(?:\\s*\\[[^\\]]*\\])?\\s*(?:\\{|$)`);
+const PAWN_NEW_CLASS_RE = new RegExp(`\\bnew\\s+(${PAWN_IDENTIFIER_SOURCE})\\s*\\(`, "g");
 const OOP_THIS_DEFINE_RE = new RegExp(`^\\s*#\\s*define\\s+this\\.\\s+THIS__\\s*\\(\\s*(${PAWN_IDENTIFIER_SOURCE})\\s*\\)`);
 const OOP_THIS_UNDEF_RE = /^\s*#\s*undef\s+this\b/;
 const PAWN_FILE_DECODER = new TextDecoder("windows-1251");
-const PAWN_SEMANTIC_TYPES = ["namespace", "function"];
+const PAWN_SEMANTIC_TYPES = ["namespace", "function", "class", "property", "method", "variable", "keyword", "type"];
+const PAWN_SEMANTIC_TYPE_INDEX = new Map(PAWN_SEMANTIC_TYPES.map((type, index) => [type, index]));
 const PAWN_SEMANTIC_LEGEND = new vscode.SemanticTokensLegend(PAWN_SEMANTIC_TYPES, []);
 const CONTROL_WORDS = new Set([
     "assert",
@@ -37,16 +40,33 @@ const CONTROL_WORDS = new Set([
 ]);
 const SYMBOL_KIND_RANK = new Map([
     ["dialog", 0],
-    ["enum-member", 1],
-    ["define", 2],
-    ["mysql-callback", 2],
-    ["global-function", 3],
-    ["function", 4],
-    ["foreign", 5],
-    ["global", 6],
-    ["enum", 7],
-    ["local", 8]
+    ["class-constructor", 1],
+    ["class-method", 2],
+    ["class-field", 3],
+    ["class", 4],
+    ["class-var", 5],
+    ["enum-member", 6],
+    ["define", 7],
+    ["mysql-callback", 7],
+    ["global-function", 8],
+    ["function", 9],
+    ["foreign", 10],
+    ["global", 11],
+    ["enum", 12],
+    ["local", 13]
 ]);
+const PAWN_BUILTIN_TYPES = new Set([
+    "bool",
+    "char",
+    "const",
+    "float",
+    "Float",
+    "int",
+    "static",
+    "stock",
+    "void"
+]);
+const OOP_HELPER_MEMBERS = new Set(["Alloc", "Delete", "IsValid"]);
 const MYSQL_QUERY_FUNCTIONS = new Set([
     "mysql_format",
     "mysql_query",
@@ -101,7 +121,7 @@ function activate(context) {
     const numericValueHints = new NumericValueHintProvider(index);
     const sqlHighlighter = new SqlHighlighter();
     const mysqlDiagnostics = new MysqlDiagnostics();
-    const semanticProvider = new PawnSemanticProvider();
+    const semanticProvider = new PawnSemanticProvider(index);
     const definitionProvider = new PawnDefinitionProvider(index);
     const referenceProvider = new PawnReferenceProvider(index);
     const includeLinkProvider = new PawnIncludeLinkProvider();
@@ -199,6 +219,9 @@ class PawnIndex {
         this.colors = new Map();
         this.numericValues = new Map();
         this.mysqlCallbacks = new Map();
+        this.classes = new Map();
+        this.classMembers = new Map();
+        this.classVariables = new Map();
         this.fileEntries = new Map();
         this.rebuildTimer = undefined;
         this.documentUpdateTimers = new Map();
@@ -339,6 +362,10 @@ class PawnIndex {
         const nextColors = new Map();
         const nextNumericValues = new Map();
         const nextMysqlCallbacks = new Map();
+        const nextClasses = new Map();
+        const nextClassMembers = new Map();
+        const classVariableCandidates = new Map();
+        const nextClassVariables = new Map();
 
         for (const entry of this.fileEntries.values()) {
             mergeRecordMap(nextSymbols, entry.symbols);
@@ -346,6 +373,20 @@ class PawnIndex {
             mergeColorMap(nextColors, entry.colors);
             mergeNumericValueMap(nextNumericValues, entry.numericValues);
             mergeRecordMap(nextMysqlCallbacks, entry.mysqlCallbacks);
+            mergeRecordMap(nextClasses, entry.classes);
+            mergeKeyedRecordMap(nextClassMembers, entry.classMembers);
+            mergeRecordMap(classVariableCandidates, entry.classVariables);
+        }
+
+        for (const records of classVariableCandidates.values()) {
+            for (const record of records) {
+                if (!nextClasses.has(record.className)) {
+                    continue;
+                }
+
+                addRecord(nextClassVariables, record);
+                addRecord(nextSymbols, record);
+            }
         }
 
         this.symbols = nextSymbols;
@@ -353,6 +394,9 @@ class PawnIndex {
         this.colors = nextColors;
         this.numericValues = nextNumericValues;
         this.mysqlCallbacks = nextMysqlCallbacks;
+        this.classes = nextClasses;
+        this.classMembers = nextClassMembers;
+        this.classVariables = nextClassVariables;
     }
 
     getColor(name) {
@@ -373,6 +417,18 @@ class PawnIndex {
 
     findMysqlCallback(name) {
         return this.mysqlCallbacks.get(name) || [];
+    }
+
+    findClass(name) {
+        return this.classes.get(name) || [];
+    }
+
+    findClassMember(className, memberName) {
+        return this.classMembers.get(makeClassMemberKey(className, memberName)) || [];
+    }
+
+    findClassVariable(name) {
+        return this.classVariables.get(name) || [];
     }
 }
 
@@ -584,19 +640,28 @@ class SqlHighlighter {
 }
 
 class PawnSemanticProvider {
-    constructor() {
-        this.disposable = vscode.languages.registerDocumentSemanticTokensProvider(
-            [
-                { language: "pawn" },
-                { pattern: "**/*.{pwn,inc,module}" }
-            ],
-            this,
-            PAWN_SEMANTIC_LEGEND
-        );
+    constructor(index) {
+        this.index = index;
+        this.onDidChangeSemanticTokensEmitter = new vscode.EventEmitter();
+        this.onDidChangeSemanticTokens = this.onDidChangeSemanticTokensEmitter.event;
+        this.disposables = [
+            vscode.languages.registerDocumentSemanticTokensProvider(
+                [
+                    { language: "pawn" },
+                    { pattern: "**/*.{pwn,inc,module}" }
+                ],
+                this,
+                PAWN_SEMANTIC_LEGEND
+            ),
+            index.onDidRebuild(() => this.onDidChangeSemanticTokensEmitter.fire())
+        ];
     }
 
     dispose() {
-        this.disposable.dispose();
+        this.onDidChangeSemanticTokensEmitter.dispose();
+        for (const disposable of this.disposables) {
+            disposable.dispose();
+        }
     }
 
     provideDocumentSemanticTokens(document) {
@@ -604,7 +669,7 @@ class PawnSemanticProvider {
             return new vscode.SemanticTokens(new Uint32Array());
         }
 
-        return buildPawnSemanticTokens(document);
+        return buildPawnSemanticTokens(document, this.index);
     }
 }
 
@@ -733,6 +798,16 @@ class PawnDefinitionProvider {
         }
 
         const word = document.getText(wordRange);
+        const classContext = getPawnClassReferenceContext(document, wordRange, word, this.index);
+        if (classContext) {
+            const classSymbols = this.findPawnClassDefinitions(classContext);
+            if (classSymbols.length) {
+                return uniqueLocations(classSymbols)
+                    .sort(compareSymbolRecords)
+                    .map((record) => makeDefinitionLink(record, classContext.originRange));
+            }
+        }
+
         const context = getReferenceContext(document, wordRange);
         const oopContext = getThisMethodCallContext(document, wordRange, word);
         if (oopContext) {
@@ -744,7 +819,7 @@ class PawnDefinitionProvider {
             }
         }
 
-        const localSymbols = findLocalDefinitions(document, word, position);
+        const localSymbols = findLocalDefinitions(document, word, position, this.index);
         const callbackReferences = context.functionDeclarationName === word ? this.index.findMysqlCallback(word) : [];
         let indexedSymbols = [];
 
@@ -782,12 +857,52 @@ class PawnDefinitionProvider {
     }
 
     findOopMethodDefinitions(tag, method) {
+        const classMethods = this.index.findClassMember(tag, method).filter((record) => record.kind !== "class-field");
+        if (classMethods.length) {
+            return classMethods;
+        }
+
         const namespaced = this.index.findSymbol(`${tag}::${method}`);
         if (namespaced.length) {
             return namespaced;
         }
 
         return this.index.findSymbol(`${tag}_${method}`);
+    }
+
+    findPawnClassDefinitions(context) {
+        if (context.kind === "class") {
+            if (context.preferConstructor) {
+                const constructors = this.index.findClassMember(context.className, context.className)
+                    .concat(this.index.findClassMember(context.className, "constructor"));
+                if (constructors.length) {
+                    return constructors;
+                }
+            }
+
+            return this.index.findClass(context.className);
+        }
+
+        if (context.kind !== "member") {
+            return [];
+        }
+
+        let members = this.index.findClassMember(context.className, context.memberName);
+        if (context.callable) {
+            const callable = members.filter((record) => record.kind !== "class-field");
+            if (callable.length) {
+                members = callable;
+            } else if (OOP_HELPER_MEMBERS.has(context.memberName)) {
+                return this.index.findClass(context.className);
+            }
+        } else {
+            const fields = members.filter((record) => record.kind === "class-field");
+            if (fields.length) {
+                members = fields;
+            }
+        }
+
+        return members;
     }
 
     findNamespacedAliasDefinitions(word) {
@@ -1004,10 +1119,14 @@ function scanPawnTextToEntry(uri, text) {
         dialogs: new Map(),
         colors: new Map(),
         numericValues: new Map(),
-        mysqlCallbacks: new Map()
+        mysqlCallbacks: new Map(),
+        classes: new Map(),
+        classMembers: new Map(),
+        classVariables: new Map()
     };
 
     scanPawnText(uri, text, entry.symbols, entry.dialogs, entry.colors, entry.numericValues, entry.mysqlCallbacks);
+    scanPawnOopText(uri, text, entry);
     return entry;
 }
 
@@ -1015,6 +1134,14 @@ function mergeRecordMap(target, source) {
     for (const records of source.values()) {
         for (const record of records) {
             addRecord(target, record);
+        }
+    }
+}
+
+function mergeKeyedRecordMap(target, source) {
+    for (const [key, records] of source) {
+        for (const record of records) {
+            addRecordByKey(target, key, record);
         }
     }
 }
@@ -1163,6 +1290,372 @@ function scanPawnText(uri, text, symbols, dialogs, colors, numericValues, mysqlC
     scanMysqlCallbacks(uri, text, mysqlCallbacks);
 }
 
+function scanPawnOopText(uri, text, entry) {
+    scanPawnClasses(uri, text, entry);
+    scanPawnClassVariables(uri, text, entry);
+}
+
+function scanPawnClasses(uri, text, entry) {
+    const lines = getLines(text);
+    const commentState = { inBlock: false };
+    let braceDepth = 0;
+    let activeClass = undefined;
+    let pendingClass = undefined;
+
+    for (const item of lines) {
+        const stripped = stripComments(item.text, commentState);
+        const code = maskStrings(stripped);
+        const classDeclaration = !activeClass && braceDepth === 0 ? parsePawnClassDeclaration(stripped) : undefined;
+
+        if (classDeclaration) {
+            const record = makeRecord(
+                classDeclaration.name,
+                "class",
+                uri,
+                item.line,
+                classDeclaration.nameStart,
+                classDeclaration.nameEnd
+            );
+            addRecord(entry.classes, record);
+            addRecord(entry.symbols, record);
+
+            if (code.includes("{")) {
+                activeClass = {
+                    name: classDeclaration.name,
+                    depth: braceDepth + 1,
+                    line: item.line
+                };
+                pendingClass = undefined;
+            } else {
+                pendingClass = classDeclaration.name;
+            }
+        } else if (!activeClass && pendingClass && braceDepth === 0 && code.includes("{")) {
+            activeClass = {
+                name: pendingClass,
+                depth: braceDepth + 1,
+                line: item.line
+            };
+            pendingClass = undefined;
+        }
+
+        if (activeClass && item.line !== activeClass.line && braceDepth === activeClass.depth) {
+            const member = parseClassMemberDeclaration(stripped, code, activeClass.name);
+            if (member) {
+                addClassMemberRecord(entry, activeClass.name, member, uri, item.line);
+            }
+        }
+
+        const nextDepth = updateBraceDepth(braceDepth, code);
+        if (activeClass && nextDepth < activeClass.depth) {
+            activeClass = undefined;
+        }
+        braceDepth = nextDepth;
+    }
+}
+
+function scanPawnClassVariables(uri, text, entry) {
+    const lines = getLines(text);
+    const commentState = { inBlock: false };
+    let braceDepth = 0;
+    let activeClass = undefined;
+    let pendingClass = undefined;
+
+    for (const item of lines) {
+        const stripped = stripComments(item.text, commentState);
+        const code = maskStrings(stripped);
+        const classDeclaration = !activeClass && braceDepth === 0 ? parsePawnClassDeclaration(stripped) : undefined;
+
+        if (classDeclaration) {
+            if (code.includes("{")) {
+                activeClass = {
+                    name: classDeclaration.name,
+                    depth: braceDepth + 1,
+                    line: item.line
+                };
+                pendingClass = undefined;
+            } else {
+                pendingClass = classDeclaration.name;
+            }
+        } else if (!activeClass && pendingClass && braceDepth === 0 && code.includes("{")) {
+            activeClass = {
+                name: pendingClass,
+                depth: braceDepth + 1,
+                line: item.line
+            };
+            pendingClass = undefined;
+        }
+
+        if (!activeClass || braceDepth !== activeClass.depth) {
+            for (const record of parseClassVariableDeclarations(stripped, uri, item.line)) {
+                addRecord(entry.classVariables, record);
+            }
+        }
+
+        const nextDepth = updateBraceDepth(braceDepth, code);
+        if (activeClass && nextDepth < activeClass.depth) {
+            activeClass = undefined;
+        }
+        braceDepth = nextDepth;
+    }
+}
+
+function parsePawnClassDeclaration(line) {
+    const match = line.match(PAWN_CLASS_DECL_RE);
+    if (!match) {
+        return undefined;
+    }
+
+    const name = match[1];
+    const nameStart = line.indexOf(name, match.index);
+    return {
+        name,
+        keywordStart: line.indexOf("class", match.index),
+        keywordEnd: line.indexOf("class", match.index) + "class".length,
+        nameStart,
+        nameEnd: nameStart + name.length
+    };
+}
+
+function parseClassMemberDeclaration(line, code, className) {
+    return parseClassMethodDeclaration(line, code, className) || parseClassFieldDeclaration(line, code);
+}
+
+function parseClassMethodDeclaration(line, code, className) {
+    const open = code.indexOf("(");
+    if (open === -1) {
+        return undefined;
+    }
+
+    const beforeOpen = code.slice(0, open);
+    if (/[=;\[]/.test(beforeOpen)) {
+        return undefined;
+    }
+
+    const nameMatch = beforeOpen.match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+    if (!nameMatch) {
+        return undefined;
+    }
+
+    const name = nameMatch[1];
+    if (CONTROL_WORDS.has(name)) {
+        return undefined;
+    }
+
+    const nameStart = beforeOpen.lastIndexOf(name);
+    const prefix = beforeOpen.slice(0, nameStart).trim();
+    if (!prefix && name !== className && name !== "constructor") {
+        return undefined;
+    }
+
+    const close = code.indexOf(")", open);
+    if (close === -1) {
+        return undefined;
+    }
+
+    const afterClose = code.slice(close + 1).trim();
+    if (afterClose && !afterClose.startsWith("{") && !afterClose.startsWith(";")) {
+        return undefined;
+    }
+
+    const prefixWords = prefix.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+    const returnType = prefixWords.length ? prefixWords[prefixWords.length - 1] : className;
+    const returnTypeStart = prefixWords.length ? beforeOpen.lastIndexOf(returnType, nameStart) : -1;
+    const kind = name === className || name === "constructor" ? "class-constructor" : "class-method";
+    return {
+        name,
+        kind,
+        returnType,
+        returnTypeStart,
+        start: nameStart,
+        end: nameStart + name.length
+    };
+}
+
+function parseClassFieldDeclaration(line, code) {
+    const semicolon = code.indexOf(";");
+    if (semicolon === -1 || code.slice(0, semicolon).includes("(")) {
+        return undefined;
+    }
+
+    const beforeAssign = line.slice(0, semicolon).split("=")[0];
+    let match = beforeAssign.match(/^\s*(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)/);
+    let typeName;
+    let typeStart = -1;
+    let name;
+    let start;
+
+    if (match) {
+        typeName = match[1];
+        name = match[2];
+        typeStart = beforeAssign.indexOf(typeName, match.index);
+        start = beforeAssign.indexOf(name, beforeAssign.indexOf(":", typeStart) + 1);
+    } else {
+        match = beforeAssign.match(/^\s*(?:new\s+)?(?:(?:const|static)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)/);
+        if (match) {
+            typeName = match[1];
+            name = match[2];
+            typeStart = beforeAssign.indexOf(typeName, match.index);
+            start = beforeAssign.indexOf(name, typeStart + typeName.length);
+        } else {
+            match = beforeAssign.match(/^\s*(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
+            if (!match) {
+                return undefined;
+            }
+
+            typeName = undefined;
+            name = match[1];
+            start = beforeAssign.indexOf(name, match.index);
+        }
+    }
+
+    if (CONTROL_WORDS.has(name)) {
+        return undefined;
+    }
+
+    return {
+        name,
+        kind: "class-field",
+        typeName,
+        typeStart,
+        start,
+        end: start + name.length
+    };
+}
+
+function parseClassVariableDeclarations(line, uri, lineNumber, acceptsClassName, allowUppercaseFallback = true) {
+    return parseClassVariableDeclarationItems(line, acceptsClassName, allowUppercaseFallback).map((item) => ({
+        ...makeRecord(item.name, "class-var", uri, lineNumber, item.nameStart, item.nameEnd),
+        className: item.className
+    }));
+}
+
+function parseClassVariableDeclarationItems(line, acceptsClassName, allowUppercaseFallback = true) {
+    const semicolon = maskStrings(line).indexOf(";");
+    if (semicolon === -1) {
+        return [];
+    }
+
+    const statement = line.slice(0, semicolon);
+    if (/^\s*(?:#|class\b|enum\b|return\b|if\b|for\b|while\b|switch\b)/.test(statement)) {
+        return [];
+    }
+
+    let match = statement.match(new RegExp(`^\\s*(?:new|static)\\s+(${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*(.*)$`));
+    if (match) {
+        const className = match[1];
+        if (!isPawnClassNameCandidate(className, acceptsClassName, allowUppercaseFallback)) {
+            return [];
+        }
+
+        const rest = match[2];
+        const restOffset = statement.indexOf(rest, match.index);
+        const classStart = statement.indexOf(className, match.index);
+        return parseClassVariableItemsFromRest(className, rest, restOffset, classStart);
+    }
+
+    match = statement.match(new RegExp(`^\\s*(?:(?:new|static)\\s+)?(${PAWN_IDENTIFIER_SOURCE})\\s+(.*)$`));
+    if (!match) {
+        return [];
+    }
+
+    const className = match[1];
+    if (!isPawnClassNameCandidate(className, acceptsClassName, allowUppercaseFallback)) {
+        return [];
+    }
+
+    const rest = match[2];
+    const restOffset = statement.indexOf(rest, match.index);
+    const classStart = statement.indexOf(className, match.index);
+    return parseClassVariableItemsFromRest(className, rest, restOffset, classStart);
+}
+
+function parseClassVariableItemsFromRest(className, rest, restOffset, classStart) {
+    const items = [];
+    for (const segment of splitTopLevelSegments(rest, restOffset)) {
+        const beforeAssign = segment.text.split("=")[0];
+        const match = beforeAssign.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)/);
+        if (!match) {
+            continue;
+        }
+
+        const name = match[1];
+        if (CONTROL_WORDS.has(name)) {
+            continue;
+        }
+
+        const nameStart = segment.offset + beforeAssign.indexOf(name, match.index);
+        items.push({
+            className,
+            classStart,
+            classEnd: classStart + className.length,
+            name,
+            nameStart,
+            nameEnd: nameStart + name.length
+        });
+    }
+
+    return items;
+}
+
+function isPawnClassNameCandidate(name, acceptsClassName, allowUppercaseFallback) {
+    if (!name || isIgnoredPawnType(name)) {
+        return false;
+    }
+
+    if (acceptsClassName && acceptsClassName(name)) {
+        return true;
+    }
+
+    return allowUppercaseFallback && /^[A-Z]/.test(name);
+}
+
+function isIgnoredPawnType(name) {
+    return PAWN_BUILTIN_TYPES.has(name) ||
+        PAWN_BUILTIN_TYPES.has(name.toLowerCase()) ||
+        /^(class|enum|forward|foreign|global|hook|native|new|public|return|task|timer|ptask)$/i.test(name);
+}
+
+function addClassMemberRecord(entry, className, member, uri, lineNumber) {
+    const record = {
+        ...makeRecord(member.name, member.kind, uri, lineNumber, member.start, member.end),
+        className,
+        returnType: member.returnType
+    };
+    addRecordByKey(entry.classMembers, makeClassMemberKey(className, member.name), record);
+
+    if (member.kind === "class-constructor") {
+        addRecordByKey(entry.classMembers, makeClassMemberKey(className, "constructor"), record);
+        addRecord(entry.symbols, { ...record, name: `${className}_Ctor` });
+        addRecord(entry.symbols, { ...record, name: `${className}_New` });
+        return;
+    }
+
+    const generatedName = makeOopGeneratedMemberName(className, member.name);
+    addRecord(entry.symbols, { ...record, name: generatedName });
+
+    if ((member.returnType || "").toLowerCase() === "dialog") {
+        const dialogRecord = { ...record, name: generatedName, kind: "dialog" };
+        addRecord(entry.dialogs, dialogRecord);
+        addRecord(entry.symbols, dialogRecord);
+    }
+}
+
+function makeClassMemberKey(className, memberName) {
+    return `${className}.${memberName}`;
+}
+
+function makeOopGeneratedMemberName(className, memberName) {
+    return `${className}_${toPawnGeneratedMemberSuffix(memberName)}`;
+}
+
+function toPawnGeneratedMemberSuffix(name) {
+    return name
+        .split("_")
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join("");
+}
+
 function collectColorDecorations(document, index) {
     const text = document.getText();
     const decorations = new Map();
@@ -1239,20 +1732,65 @@ function collectNumericValueHints(document, range, index) {
     return hints;
 }
 
-function buildPawnSemanticTokens(document) {
+function buildPawnSemanticTokens(document, index) {
     const builder = new vscode.SemanticTokensBuilder(PAWN_SEMANTIC_LEGEND);
     const lines = getLines(document.getText());
     const commentState = { inBlock: false };
+    let braceDepth = 0;
+    let activeClass = undefined;
+    let pendingClass = undefined;
 
     for (const item of lines) {
-        const code = maskStrings(stripComments(item.text, commentState));
-        addPawnNamespaceTokens(builder, code, item.line);
+        const stripped = stripComments(item.text, commentState);
+        const code = maskStrings(stripped);
+        const tokens = [];
+        const classDeclaration = !activeClass && braceDepth === 0 ? parsePawnClassDeclaration(stripped) : undefined;
+
+        if (classDeclaration) {
+            addSemanticToken(tokens, classDeclaration.keywordStart, classDeclaration.keywordEnd - classDeclaration.keywordStart, "keyword");
+            addSemanticToken(tokens, classDeclaration.nameStart, classDeclaration.nameEnd - classDeclaration.nameStart, "class");
+
+            if (code.includes("{")) {
+                activeClass = {
+                    name: classDeclaration.name,
+                    depth: braceDepth + 1,
+                    line: item.line
+                };
+                pendingClass = undefined;
+            } else {
+                pendingClass = classDeclaration.name;
+            }
+        } else if (!activeClass && pendingClass && braceDepth === 0 && code.includes("{")) {
+            activeClass = {
+                name: pendingClass,
+                depth: braceDepth + 1,
+                line: item.line
+            };
+            pendingClass = undefined;
+        }
+
+        if (activeClass && item.line !== activeClass.line && braceDepth === activeClass.depth) {
+            addClassMemberDeclarationTokens(tokens, stripped, code, activeClass.name);
+        } else {
+            addClassVariableDeclarationTokens(tokens, stripped, index);
+        }
+
+        addNewClassTokens(tokens, code, index);
+        addMemberAccessTokens(tokens, code);
+        addPawnNamespaceTokens(tokens, code);
+        pushSemanticTokens(builder, tokens, item.line);
+
+        const nextDepth = updateBraceDepth(braceDepth, code);
+        if (activeClass && nextDepth < activeClass.depth) {
+            activeClass = undefined;
+        }
+        braceDepth = nextDepth;
     }
 
     return builder.build();
 }
 
-function addPawnNamespaceTokens(builder, line, lineNumber) {
+function addPawnNamespaceTokens(tokens, line) {
     PAWN_NAMESPACE_RE.lastIndex = 0;
 
     let match;
@@ -1261,8 +1799,90 @@ function addPawnNamespaceTokens(builder, line, lineNumber) {
         const name = match[2];
         const nameStart = match.index + namespace.length + 2;
 
-        builder.push(lineNumber, match.index, namespace.length + 2, 0, 0);
-        builder.push(lineNumber, nameStart, name.length, 1, 0);
+        addSemanticToken(tokens, match.index, namespace.length + 2, "namespace");
+        addSemanticToken(tokens, nameStart, name.length, "function");
+    }
+}
+
+function addClassMemberDeclarationTokens(tokens, line, code, className) {
+    const member = parseClassMemberDeclaration(line, code, className);
+    if (!member) {
+        return;
+    }
+
+    if (member.typeName) {
+        addSemanticToken(tokens, member.typeStart, member.typeName.length, "type");
+    } else if (member.returnType && member.returnType !== className) {
+        addSemanticToken(tokens, member.returnTypeStart, member.returnType.length, "type");
+    }
+
+    addSemanticToken(tokens, member.start, member.end - member.start, member.kind === "class-field" ? "property" : "method");
+}
+
+function addClassVariableDeclarationTokens(tokens, line, index) {
+    for (const item of parseClassVariableDeclarationItems(line, (name) => isKnownPawnClass(index, name), false)) {
+        addSemanticToken(tokens, item.classStart, item.classEnd - item.classStart, "class");
+        addSemanticToken(tokens, item.nameStart, item.nameEnd - item.nameStart, "variable");
+    }
+}
+
+function addNewClassTokens(tokens, line, index) {
+    PAWN_NEW_CLASS_RE.lastIndex = 0;
+
+    let match;
+    while ((match = PAWN_NEW_CLASS_RE.exec(line)) !== null) {
+        const className = match[1];
+        if (!isKnownPawnClass(index, className) && !/^[A-Z]/.test(className)) {
+            continue;
+        }
+
+        const newStart = match.index + match[0].indexOf("new");
+        const classStart = match.index + match[0].indexOf(className);
+        addSemanticToken(tokens, newStart, 3, "keyword");
+        addSemanticToken(tokens, classStart, className.length, "class");
+    }
+}
+
+function addMemberAccessTokens(tokens, line) {
+    const memberAccessRe = new RegExp(`\\b(${PAWN_IDENTIFIER_SOURCE})(?:\\s*\\[[^\\]]*\\])*\\s*\\.\\s*(${PAWN_IDENTIFIER_SOURCE})\\b`, "g");
+    let match;
+
+    while ((match = memberAccessRe.exec(line)) !== null) {
+        const owner = match[1];
+        const member = match[2];
+        const memberStart = match.index + match[0].lastIndexOf(member);
+        const afterMember = line.slice(memberStart + member.length);
+        const tokenType = /^\s*\(/.test(afterMember) ? "method" : "property";
+
+        if (owner === "this") {
+            addSemanticToken(tokens, match.index, owner.length, "variable");
+        }
+
+        addSemanticToken(tokens, memberStart, member.length, tokenType);
+    }
+}
+
+function addSemanticToken(tokens, start, length, type) {
+    const tokenType = PAWN_SEMANTIC_TYPE_INDEX.get(type);
+    if (start < 0 || length <= 0 || tokenType === undefined) {
+        return;
+    }
+
+    tokens.push({ start, length, tokenType });
+}
+
+function pushSemanticTokens(builder, tokens, lineNumber) {
+    let lastEnd = -1;
+    tokens.sort((a, b) => a.start - b.start || b.length - a.length);
+
+    for (const token of tokens) {
+        const end = token.start + token.length;
+        if (token.start < lastEnd) {
+            continue;
+        }
+
+        builder.push(lineNumber, token.start, token.length, token.tokenType, 0);
+        lastEnd = end;
     }
 }
 
@@ -1759,24 +2379,47 @@ function parseEnumContent(content, uri, lineNumber, contentStartCharacter, symbo
     }
 }
 
-function findLocalDefinitions(document, word, position) {
+function findLocalDefinitions(document, word, position, index) {
     const text = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
     const lines = getLines(text);
     const records = [];
     const uri = document.uri;
+    const commentState = { inBlock: false };
 
     for (const item of lines) {
-        const stripped = stripComments(item.text, { inBlock: false });
+        const stripped = stripComments(item.text, commentState);
         const declarationRecords = parseGlobalDeclarations(stripped, uri, item.line)
             .filter((record) => record.name === word)
             .map((record) => ({ ...record, kind: "local" }));
         records.push(...declarationRecords);
+
+        const classVariableRecords = parseClassVariableDeclarations(
+            stripped,
+            uri,
+            item.line,
+            (name) => isKnownPawnClass(index, name),
+            false
+        ).filter((record) => record.name === word);
+        records.push(...classVariableRecords);
 
         const functionRecord = parseFunctionDefinition(stripped, maskStrings(stripped), uri, item.line);
         if (functionRecord) {
             for (const record of parseFunctionParameters(stripped, functionRecord, uri, item.line)) {
                 if (record.name === word) {
                     records.push(record);
+                }
+            }
+        }
+
+        const activeClass = getEnclosingPawnClass(document, item.line);
+        if (activeClass && activeClass.braceDepth === activeClass.depth) {
+            const classMember = parseClassMemberDeclaration(stripped, maskStrings(stripped), activeClass.name);
+            if (classMember && classMember.kind !== "class-field") {
+                const functionRecord = makeRecord(classMember.name, classMember.kind, uri, item.line, classMember.start, classMember.end);
+                for (const record of parseFunctionParameters(stripped, functionRecord, uri, item.line)) {
+                    if (record.name === word) {
+                        records.push(record);
+                    }
                 }
             }
         }
@@ -1828,6 +2471,277 @@ function getPawnSymbolRangeAtPosition(document, position) {
     }
 
     return undefined;
+}
+
+function getPawnClassReferenceContext(document, wordRange, word, index) {
+    const memberContext = getPawnClassMemberReferenceContext(document, wordRange, word, index);
+    if (memberContext) {
+        return memberContext;
+    }
+
+    const declarationContext = getPawnClassMemberDeclarationReferenceContext(document, wordRange);
+    if (declarationContext) {
+        return declarationContext;
+    }
+
+    const classContext = getPawnClassNameReferenceContext(document, wordRange, word, index);
+    if (classContext) {
+        return classContext;
+    }
+
+    return undefined;
+}
+
+function getPawnClassMemberReferenceContext(document, wordRange, word, index) {
+    const line = document.lineAt(wordRange.start.line).text;
+    const afterWord = line.slice(wordRange.end.character);
+
+    if (word === "this") {
+        const memberMatch = afterWord.match(new RegExp(`^\\s*\\.\\s*(${PAWN_IDENTIFIER_SOURCE})\\b`));
+        if (!memberMatch) {
+            return undefined;
+        }
+
+        const className = resolveThisClassName(document, wordRange.start.line);
+        if (!className) {
+            return undefined;
+        }
+
+        const memberName = memberMatch[1];
+        const memberStart = wordRange.end.character + memberMatch[0].indexOf(memberName);
+        return {
+            kind: "member",
+            className,
+            memberName,
+            callable: /^\s*\(/.test(afterWord.slice(memberMatch[0].indexOf(memberName) + memberName.length)),
+            originRange: new vscode.Range(
+                wordRange.start,
+                new vscode.Position(wordRange.start.line, memberStart + memberName.length)
+            )
+        };
+    }
+
+    const beforeWord = line.slice(0, wordRange.start.character);
+    if (!/\.\s*$/.test(beforeWord)) {
+        return undefined;
+    }
+
+    const className = resolveMemberAccessClassName(document, beforeWord, wordRange.start, index);
+    if (!className) {
+        return undefined;
+    }
+
+    return {
+        kind: "member",
+        className,
+        memberName: word,
+        callable: /^\s*\(/.test(afterWord),
+        originRange: wordRange
+    };
+}
+
+function getPawnClassMemberDeclarationReferenceContext(document, wordRange) {
+    const activeClass = getEnclosingPawnClass(document, wordRange.start.line);
+    if (!activeClass || activeClass.braceDepth !== activeClass.depth) {
+        return undefined;
+    }
+
+    const line = document.lineAt(wordRange.start.line).text;
+    const stripped = stripComments(line, { inBlock: false });
+    const code = maskStrings(stripped);
+    const member = parseClassMemberDeclaration(stripped, code, activeClass.name);
+    if (!member) {
+        return undefined;
+    }
+
+    const cursorStart = wordRange.start.character;
+    const cursorEnd = wordRange.end.character;
+    if (cursorStart < member.start || cursorEnd > member.end) {
+        return undefined;
+    }
+
+    return {
+        kind: "member",
+        className: activeClass.name,
+        memberName: member.name,
+        callable: member.kind !== "class-field",
+        originRange: wordRange
+    };
+}
+
+function getPawnClassNameReferenceContext(document, wordRange, word, index) {
+    if (!isKnownPawnClass(index, word)) {
+        return undefined;
+    }
+
+    const line = document.lineAt(wordRange.start.line).text;
+    const beforeWord = line.slice(0, wordRange.start.character);
+    const afterWord = line.slice(wordRange.end.character);
+    const classDeclaration = parsePawnClassDeclaration(line);
+
+    if (
+        classDeclaration &&
+        wordRange.start.character >= classDeclaration.nameStart &&
+        wordRange.end.character <= classDeclaration.nameEnd
+    ) {
+        return {
+            kind: "class",
+            className: word,
+            preferConstructor: false,
+            originRange: wordRange
+        };
+    }
+
+    if (/\bnew\s*$/.test(beforeWord) && /^\s*\(/.test(afterWord)) {
+        return {
+            kind: "class",
+            className: word,
+            preferConstructor: true,
+            originRange: wordRange
+        };
+    }
+
+    for (const item of parseClassVariableDeclarationItems(line, (name) => isKnownPawnClass(index, name), false)) {
+        if (wordRange.start.character >= item.classStart && wordRange.end.character <= item.classEnd) {
+            return {
+                kind: "class",
+                className: word,
+                preferConstructor: false,
+                originRange: wordRange
+            };
+        }
+    }
+
+    return undefined;
+}
+
+function resolveMemberAccessClassName(document, beforeMember, position, index) {
+    const explicitTagMatch = beforeMember.match(new RegExp(`\\b(${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*[^;{}]*\\.\\s*$`));
+    if (explicitTagMatch && isKnownPawnClass(index, explicitTagMatch[1])) {
+        return explicitTagMatch[1];
+    }
+
+    const ownerMatch = beforeMember.match(new RegExp(`\\b(${PAWN_IDENTIFIER_SOURCE})(?:\\s*\\[[^\\]]*\\])*\\s*\\.\\s*$`));
+    if (!ownerMatch) {
+        return undefined;
+    }
+
+    const ownerName = ownerMatch[1];
+    if (ownerName === "this") {
+        return resolveThisClassName(document, position.line);
+    }
+
+    if (isKnownPawnClass(index, ownerName)) {
+        return ownerName;
+    }
+
+    return findPawnClassVariableType(document, ownerName, position, index);
+}
+
+function resolveThisClassName(document, lineNumber) {
+    const activeClass = getEnclosingPawnClass(document, lineNumber);
+    if (activeClass) {
+        return activeClass.name;
+    }
+
+    return getActiveThisTag(document, lineNumber);
+}
+
+function findPawnClassVariableType(document, variableName, position, index) {
+    const localRecord = findLocalClassVariableDefinition(document, variableName, position, index);
+    if (localRecord) {
+        return localRecord.className;
+    }
+
+    const records = index.findClassVariable(variableName);
+    if (!records.length) {
+        return undefined;
+    }
+
+    const documentUri = document.uri.toString();
+    const sameDocument = records
+        .filter((record) => record.uri.toString() === documentUri && record.range.start.line <= position.line)
+        .sort((a, b) => b.range.start.line - a.range.start.line || b.range.start.character - a.range.start.character);
+    if (sameDocument.length) {
+        return sameDocument[0].className;
+    }
+
+    return records[0].className;
+}
+
+function findLocalClassVariableDefinition(document, variableName, position, index) {
+    const text = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+    const lines = getLines(text);
+    const commentState = { inBlock: false };
+    let result = undefined;
+
+    for (const item of lines) {
+        const stripped = stripComments(item.text, commentState);
+        const records = parseClassVariableDeclarations(
+            stripped,
+            document.uri,
+            item.line,
+            (name) => isKnownPawnClass(index, name),
+            false
+        );
+
+        for (const record of records) {
+            if (record.name === variableName) {
+                result = record;
+            }
+        }
+    }
+
+    return result;
+}
+
+function getEnclosingPawnClass(document, lineNumber) {
+    const commentState = { inBlock: false };
+    let braceDepth = 0;
+    let activeClass = undefined;
+    let pendingClass = undefined;
+
+    for (let line = 0; line <= lineNumber; line++) {
+        const stripped = stripComments(document.lineAt(line).text, commentState);
+        const code = maskStrings(stripped);
+        const classDeclaration = !activeClass && braceDepth === 0 ? parsePawnClassDeclaration(stripped) : undefined;
+
+        if (classDeclaration) {
+            if (code.includes("{")) {
+                activeClass = {
+                    name: classDeclaration.name,
+                    depth: braceDepth + 1,
+                    line
+                };
+                pendingClass = undefined;
+            } else {
+                pendingClass = classDeclaration.name;
+            }
+        } else if (!activeClass && pendingClass && braceDepth === 0 && code.includes("{")) {
+            activeClass = {
+                name: pendingClass,
+                depth: braceDepth + 1,
+                line
+            };
+            pendingClass = undefined;
+        }
+
+        if (line === lineNumber) {
+            return activeClass ? { ...activeClass, braceDepth } : undefined;
+        }
+
+        const nextDepth = updateBraceDepth(braceDepth, code);
+        if (activeClass && nextDepth < activeClass.depth) {
+            activeClass = undefined;
+        }
+        braceDepth = nextDepth;
+    }
+
+    return undefined;
+}
+
+function isKnownPawnClass(index, name) {
+    return Boolean(index && index.findClass(name).length);
 }
 
 function getThisMethodCallContext(document, wordRange, word) {
@@ -1993,6 +2907,15 @@ function addRecord(map, record) {
         current.push(record);
     } else {
         map.set(record.name, [record]);
+    }
+}
+
+function addRecordByKey(map, key, record) {
+    const current = map.get(key);
+    if (current) {
+        current.push(record);
+    } else {
+        map.set(key, [record]);
     }
 }
 

@@ -2,7 +2,7 @@
   "name": "pawn-helper",
   "displayName": "Pawn Helper",
   "description": "Pawn language helpers for color literals and workspace symbol navigation.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "saintantony",
   "license": "UNLICENSED",
   "repository": {
@@ -144,7 +144,7 @@
   },
   "scripts": {
     "check": "node --check extension.js",
-    "package": "vsce package --no-dependencies",
+    "package": "npx --yes @vscode/vsce package --no-dependencies",
     "publish": "vsce publish --no-dependencies",
     "install:local": "powershell -ExecutionPolicy Bypass -File ./install.ps1"
   }

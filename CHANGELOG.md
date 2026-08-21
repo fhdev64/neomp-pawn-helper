@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.5
+
+- Added semantic highlighting for compiler OOP classes, fields, methods, object variables, and `new Class(...)` expressions.
+- Added Ctrl+Click navigation for class declarations, constructors, class methods, class fields, class object variables, generated `Class_Method` names, and generated class dialogs.
+
 ## 1.0.4
 
 - Added semantic highlighting for namespaced Pawn calls so `Namespace::Function` no longer colors `::` as a tag separator.

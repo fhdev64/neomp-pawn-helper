@@ -1,24 +1,25 @@
 {
-  "name": "pawn-helper",
-  "displayName": "Pawn Helper",
-  "description": "Pawn language helpers for color literals and workspace symbol navigation.",
-  "version": "1.0.5",
-  "publisher": "saintantony",
+  "name": "neopawn-helper",
+  "displayName": "NeoPawn Helper",
+  "description": "Полная поддержка NeoPawn и классического Pawn в Visual Studio Code.",
+  "version": "1.0.0",
+  "publisher": "neomp",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "https://gitlab.com/saintantony/pawn-helper.git"
+    "url": "https://github.com/fhdev64/neomp-pawn-helper.git"
   },
-  "homepage": "https://gitlab.com/saintantony/pawn-helper",
+  "homepage": "https://github.com/fhdev64/neomp-pawn-helper",
   "bugs": {
-    "url": "https://gitlab.com/saintantony/pawn-helper/-/issues"
+    "url": "https://github.com/fhdev64/neomp-pawn-helper/issues"
   },
   "keywords": [
     "pawn",
+    "neopawn",
     "samp",
     "open.mp",
-    "language",
-    "colors"
+    "oop",
+    "language"
   ],
   "engines": {
     "vscode": "^1.85.0"
@@ -37,6 +38,7 @@
       {
         "id": "pawn",
         "aliases": [
+          "NeoPawn",
           "Pawn",
           "pawn"
         ],
@@ -48,6 +50,13 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      {
+        "language": "pawn",
+        "scopeName": "source.neopawn",
+        "path": "./syntaxes/neopawn.tmLanguage.json"
+      }
+    ],
     "configurationDefaults": {
       "[pawn]": {
         "editor.semanticHighlighting.enabled": true
@@ -55,97 +64,96 @@
     },
     "commands": [
       {
-        "command": "livePawnHelper.reindex",
-        "title": "Pawn Helper: Reindex Workspace"
+        "command": "neoPawnHelper.reindex",
+        "title": "NeoPawn Helper: переиндексировать проект"
       },
       {
-        "command": "livePawnHelper.generateEnumFromCreateTable",
-        "title": "Pawn Helper: Generate Enum from CREATE TABLE"
+        "command": "neoPawnHelper.generateEnumFromCreateTable",
+        "title": "NeoPawn Helper: создать enum из CREATE TABLE"
       }
     ],
     "configuration": {
-      "title": "Pawn Helper",
+      "title": "NeoPawn Helper",
       "properties": {
-        "livePawnHelper.colors.enabled": {
+        "neoPawnHelper.colors.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Highlight Pawn color literals and named defines that contain color values."
+          "description": "Подсвечивать цветовые литералы Pawn и именованные цвета."
         },
-        "livePawnHelper.colors.variables.enabled": {
+        "neoPawnHelper.colors.variables.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Highlight uses of named color variables and defines separately from raw color literals."
+          "description": "Подсвечивать обращения к именованным цветам отдельно от литералов."
         },
-        "livePawnHelper.constants.valueHints.enabled": {
+        "neoPawnHelper.constants.valueHints.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show inline value hints for named #define, const, and enum constants with simple numeric values."
+          "description": "Показывать значения простых #define, const и элементов enum прямо в редакторе."
         },
-        "livePawnHelper.definitions.enabled": {
+        "neoPawnHelper.definitions.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable go-to-definition for Pawn symbols indexed by this extension."
+          "description": "Включить переход к определениям и поиск ссылок для Pawn и NeoPawn."
         },
-        "livePawnHelper.sql.highlighting.enabled": {
+        "neoPawnHelper.sql.highlighting.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Highlight SQL keywords and mysql_format placeholders inside SQL string literals."
+          "description": "Подсвечивать SQL и спецификаторы mysql_format внутри строк."
         },
-        "livePawnHelper.sql.diagnostics.enabled": {
+        "neoPawnHelper.sql.diagnostics.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Warn when mysql_format placeholder counts do not match provided arguments."
+          "description": "Проверять соответствие спецификаторов mysql_format переданным аргументам."
         },
-        "livePawnHelper.index.include": {
+        "neoPawnHelper.index.include": {
           "type": "array",
           "default": [
-            "gamemodes/**/*.{pwn,inc,module}",
-            "pawno/include/**/*.{pwn,inc,module}",
-            "*.{pwn,inc,module}"
+            "**/*.{pwn,inc,module}"
           ],
           "items": {
             "type": "string"
           },
-          "description": "Workspace globs used to index Pawn files."
+          "description": "Шаблоны файлов Pawn, которые входят в индекс."
         },
-        "livePawnHelper.index.exclude": {
+        "neoPawnHelper.index.exclude": {
           "type": "array",
           "default": [
             "**/.git/**",
             "**/.vs/**",
             "**/node_modules/**",
+            "**/neomp-pawn-helper/**",
             "**/vscode-pawn-helper/**"
           ],
           "items": {
             "type": "string"
           },
-          "description": "Workspace globs excluded from Pawn indexing."
+          "description": "Шаблоны каталогов и файлов, исключённых из индекса."
         },
-        "livePawnHelper.index.maxFiles": {
+        "neoPawnHelper.index.maxFiles": {
           "type": "number",
           "default": 20000,
           "minimum": 100,
-          "description": "Maximum number of Pawn files to index."
+          "description": "Максимальное число файлов в индексе."
         },
-        "livePawnHelper.index.debounceMs": {
+        "neoPawnHelper.index.debounceMs": {
           "type": "number",
           "default": 1200,
           "minimum": 100,
-          "description": "Delay before rebuilding the index after document or workspace changes."
+          "description": "Задержка полной переиндексации после изменения проекта, мс."
         },
-        "livePawnHelper.index.documentDebounceMs": {
+        "neoPawnHelper.index.documentDebounceMs": {
           "type": "number",
           "default": 250,
           "minimum": 50,
-          "description": "Delay before updating the index for the edited Pawn document."
+          "description": "Задержка обновления индекса открытого документа, мс."
         }
       }
     }
   },
   "scripts": {
-    "check": "node --check extension.js",
+    "check": "node --check extension.js && node --check test/extension.test.js && node --check test/workspace-index.test.js",
+    "test": "node test/extension.test.js",
     "package": "npx --yes @vscode/vsce package --no-dependencies",
-    "publish": "vsce publish --no-dependencies",
     "install:local": "powershell -ExecutionPolicy Bypass -File ./install.ps1"
   }
 }

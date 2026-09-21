@@ -1,52 +1,137 @@
-# Pawn Helper
+# NeoPawn Helper
 
-Pawn Helper adds lightweight editor support for Pawn projects in Visual Studio Code.
+Расширение Visual Studio Code для NeoPawn Compiler и классического Pawn. Оно индексирует проект без отдельного языкового сервера, понимает новый ООП-синтаксис и продолжает работать с обычными `.pwn`, `.inc` и `.module`.
 
-## Features
+## Преимущества
 
-- Registers Pawn files with `.pwn`, `.inc`, and `.module` extensions.
-- Highlights color literals written as `0xRRGGBB`, `0xRRGGBBAA`, and `{RRGGBB}`.
-- Highlights any named `#define` that contains a color value, including `0xRRGGBB`, `0xRRGGBBAA`, `{RRGGBB}`, `RRGGBB`, and `RRGGBBAA`.
-- Allows named color variable/define highlighting to be disabled separately from raw color literals.
-- Adds Ctrl+Click links for paths after `#include`.
-- Shows inline value hints next to uses of named `#define`, `const`, and enum constants with simple integer or float values.
-- Provides go to definition for indexed Pawn symbols, including `Namespace::Function` names.
-- Semantically highlights namespaced symbols so `Namespace::Function` is not confused with `tag:Name`.
-- Highlights compiler OOP syntax and provides Ctrl+Click navigation for classes, constructors, class methods, class fields, and class object variables.
-- Indexes functions, globals, defines, enum members, and dialog declarations.
-- Supports paired navigation between `global` implementations and `foreign` declarations.
-- Highlights SQL keywords and `mysql_format` placeholders such as `%i`, `%e`, `%d`, and `%s` inside SQL string literals.
-- Suggests ready-made SQL snippets after `INSERT`, `UPDATE`, `DELETE`, and `SELECT` in `format` and MySQL query string arguments.
-- Warns when `mysql_format` placeholder counts do not match the provided value arguments.
-- Links MySQL query callbacks back to the `mysql_tquery`, `mysql_pquery`, or `mysql_function_query` call that references them.
-- Adds `Pawn Helper: Generate Enum from CREATE TABLE` for creating Pawn enum constants from a selected SQL table schema.
-- Adds `Pawn Helper: Reindex Workspace` for manually rebuilding the workspace index.
+- Полная подсветка `class`, `extends`, `abstract`, `final`, `virtual`, `override`, `owned`, модификаторов доступа, свойств и полей только для чтения.
+- Переход к объявлению класса, базового класса, конструктора нужной арности, поля, свойства, метода и унаследованного члена.
+- Переход из `base(...)` к конструктору родителя.
+- Поддержка `this.member`, `object.Member()`, `Class.Member`, `Class.Is(...)`, `Class.Cast(...)` и старого `THIS__`.
+- Подсказки членов после точки и классов после `new` с учётом наследования.
+- Hover с сигнатурой члена и указанием класса, от которого он унаследован.
+- Индекс функций, глобальных переменных, `#define`, `enum`, диалогов, `global`/`foreign` и пространств имён `Namespace::Function`.
+- Переходы по `#include` и ссылки между MySQL-запросами и callback-функциями.
+- Подсветка цветов, SQL и спецификаторов `mysql_format`.
+- Диагностика количества аргументов `mysql_format`.
+- Встроенные значения простых `#define`, `const` и элементов `enum`.
+- Совместная работа NeoPawn и старого Pawn в одном проекте.
 
-## Settings
+## Поддерживаемый ООП-синтаксис
 
-- `livePawnHelper.colors.enabled`: enable or disable color highlighting.
-- `livePawnHelper.colors.variables.enabled`: enable or disable highlighting for named color variables and defines.
-- `livePawnHelper.constants.valueHints.enabled`: enable or disable inline value hints for numeric constants.
-- `livePawnHelper.definitions.enabled`: enable or disable go to definition.
-- `livePawnHelper.sql.highlighting.enabled`: enable or disable SQL string highlighting.
-- `livePawnHelper.sql.diagnostics.enabled`: enable or disable `mysql_format` placeholder diagnostics.
-- `livePawnHelper.index.include`: workspace glob patterns used for indexing.
-- `livePawnHelper.index.exclude`: workspace glob patterns ignored during indexing.
-- `livePawnHelper.index.maxFiles`: maximum number of Pawn files to index.
-- `livePawnHelper.index.debounceMs`: delay before rebuilding the index after file changes.
+```pawn
+abstract class Entity[128] {
+	protected int id;
+	public property float Angle;
+	public readonly int Model;
+	public static int Count;
 
-## Local Development
+	Entity(int id, int model)
+	{
+		this.id = id;
+		this.Model = model;
+		Entity.Count++;
+	}
 
-Run the syntax check:
+	abstract int GetValue();
 
-```bash
-npm run check
+	~Entity()
+	{
+	}
+}
+
+final class Player extends Entity {
+	Player(int id, int model)
+	{
+		base(id, model);
+	}
+
+	override int GetValue()
+	{
+		return this.id;
+	}
+}
+
+stock System_Use()
+{
+	owned Player player = new Player(10, 411);
+	Entity entity = Entity:player;
+
+	if (Player.Is(entity))
+	{
+		Player checked = Player.Cast(entity);
+		checked.GetValue();
+	}
+}
 ```
 
-Build a local VSIX package:
+Поддерживаются оба варианта наследования: `class Player extends Entity` и `class Player : Entity`. Перегруженные конструкторы, деструкторы, статические члены, `public/protected/private`, `property`, `readonly`, `virtual/override`, абстрактные и финальные классы индексируются как самостоятельные символы.
 
-```bash
+Старый стиль также распознаётся:
+
+```pawn
+#define this. THIS__(Entity)
+
+Float:Entity_GetAngle(Entity:this__)
+{
+	return this.GetAngle();
+}
+
+#undef this
+```
+
+## Команды
+
+Откройте палитру команд через `Ctrl+Shift+P`:
+
+- `NeoPawn Helper: переиндексировать проект` — полностью перестроить индекс;
+- `NeoPawn Helper: создать enum из CREATE TABLE` — преобразовать выделенный SQL `CREATE TABLE` в Pawn enum.
+
+## Настройки
+
+| Параметр | Назначение | По умолчанию |
+|---|---|---:|
+| `neoPawnHelper.colors.enabled` | Подсветка цветовых литералов и именованных цветов | `true` |
+| `neoPawnHelper.colors.variables.enabled` | Отдельная подсветка обращений к именованным цветам | `true` |
+| `neoPawnHelper.constants.valueHints.enabled` | Встроенные значения числовых констант | `true` |
+| `neoPawnHelper.definitions.enabled` | Переходы к определениям и поиск ссылок | `true` |
+| `neoPawnHelper.sql.highlighting.enabled` | Подсветка SQL внутри строк | `true` |
+| `neoPawnHelper.sql.diagnostics.enabled` | Проверка аргументов `mysql_format` | `true` |
+| `neoPawnHelper.index.include` | Glob-шаблоны индексируемых файлов | `**/*.{pwn,inc,module}` |
+| `neoPawnHelper.index.exclude` | Glob-шаблоны исключений | служебные каталоги |
+| `neoPawnHelper.index.maxFiles` | Максимальное число файлов в индексе | `20000` |
+| `neoPawnHelper.index.debounceMs` | Задержка полной переиндексации | `1200` мс |
+| `neoPawnHelper.index.documentDebounceMs` | Задержка обновления открытого файла | `250` мс |
+
+Пример `settings.json`:
+
+```json
+{
+  "neoPawnHelper.index.include": [
+    "gamemodes/**/*.{pwn,inc,module}",
+    "API/**/*.{pwn,inc,module}"
+  ],
+  "neoPawnHelper.index.exclude": [
+    "**/.git/**",
+    "**/build/**"
+  ],
+  "neoPawnHelper.sql.diagnostics.enabled": true
+}
+```
+
+## Установка VSIX
+
+1. Откройте раздел расширений VS Code.
+2. Выберите меню `…` → `Установить из VSIX…`.
+3. Укажите `neopawn-helper-1.0.0.vsix`.
+4. Перезагрузите окно редактора.
+
+## Разработка
+
+```powershell
+npm test
+npm run check
 npm run package
 ```
 
-Install the generated `.vsix` from the Extensions view with `Install from VSIX...`.
+`npm test` проверяет разбор классов, наследования, модификаторов, конструкторов, деструкторов, `owned` и совместимого Pawn-синтаксиса.

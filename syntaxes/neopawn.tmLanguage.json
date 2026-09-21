@@ -1,0 +1,197 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "NeoPawn",
+  "scopeName": "source.neopawn",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#preprocessor"
+    },
+    {
+      "include": "#classes"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#functions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.neopawn",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.neopawn",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.neopawn",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.neopawn",
+              "match": "\\\\."
+            },
+            {
+              "name": "constant.other.placeholder.neopawn",
+              "match": "%(?:\\d+\\$)?[-+0-9.#]*(?:[bcdefgisux])"
+            }
+          ]
+        },
+        {
+          "name": "constant.character.neopawn",
+          "match": "'(?:\\\\.|[^'\\\\])+'"
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "meta.preprocessor.neopawn",
+          "begin": "^\\s*(#)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.directive.neopawn"
+            },
+            "2": {
+              "name": "keyword.control.directive.neopawn"
+            }
+          },
+          "end": "$"
+          ,
+          "patterns": [
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#numbers"
+            }
+          ]
+        }
+      ]
+    },
+    "classes": {
+      "patterns": [
+        {
+          "match": "\\b(abstract|final)?\\s*(class)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(extends|:)\\s*([A-Za-z_][A-Za-z0-9_]*))?",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.neopawn"
+            },
+            "2": {
+              "name": "storage.type.class.neopawn"
+            },
+            "3": {
+              "name": "entity.name.type.class.neopawn"
+            },
+            "4": {
+              "name": "storage.modifier.extends.neopawn"
+            },
+            "5": {
+              "name": "entity.other.inherited-class.neopawn"
+            }
+          }
+        },
+        {
+          "name": "variable.language.this.neopawn",
+          "match": "\\bthis\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "storage.modifier.neopawn",
+          "match": "\\b(?:public|protected|private|static|stock|const|property|readonly|virtual|override|abstract|final|owned|native|forward|hook|global|foreign)\\b"
+        },
+        {
+          "name": "keyword.control.neopawn",
+          "match": "\\b(?:if|else|for|while|do|switch|case|default|break|continue|return|goto|state|assert|base|new|delete)\\b"
+        },
+        {
+          "name": "constant.language.neopawn",
+          "match": "\\b(?:true|false|null)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.neopawn",
+          "match": "\\b(?:bool|char|float|int|void|Float|String|File|DB|DBResult)\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(enum)\\s+(?:[A-Za-z_][A-Za-z0-9_]*\\s*:\\s*)?([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.enum.neopawn"
+            },
+            "2": {
+              "name": "entity.name.type.enum.neopawn"
+            }
+          }
+        },
+        {
+          "name": "entity.name.type.tag.neopawn",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*:(?!:))"
+        },
+        {
+          "name": "keyword.operator.neopawn",
+          "match": "(?:==|!=|<=|>=|\\+\\+|--|&&|\\|\\||<<|>>|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|[+\\-*/%&|^~!=<>?:])"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.neopawn",
+          "match": "\\b0[xX][0-9A-Fa-f]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.neopawn",
+          "match": "\\b\\d+\\.\\d+(?:[eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.neopawn",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.neopawn",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+      ]
+    }
+  }
+}

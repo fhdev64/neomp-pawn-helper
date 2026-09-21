@@ -14,7 +14,8 @@ const EXTERNAL_FUNCTION_KEYWORDS_SOURCE = "global|foreign";
 const FUNCTION_DEFINITION_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\([^;]*\\)\\s*(?:\\{|$)`);
 const EXTERNAL_FUNCTION_RE = new RegExp(`^\\s*(${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
 const FUNCTION_CONTEXT_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE}|${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
-const PAWN_CLASS_DECL_RE = new RegExp(`^\\s*class\\s+(${PAWN_IDENTIFIER_SOURCE})(?:\\s*\\[[^\\]]*\\])?\\s*(?:\\{|$)`);
+const OOP_MEMBER_MODIFIERS_SOURCE = "public|protected|private|static|property|readonly|virtual|override|abstract|final";
+const PAWN_CLASS_DECL_RE = new RegExp(`^\\s*(?:(abstract|final)\\s+)?class\\s+(${PAWN_IDENTIFIER_SOURCE})(?:\\s*\\[[^\\]]*\\])?(?:\\s*(extends|:)\\s*(${PAWN_IDENTIFIER_SOURCE}))?\\s*(?:\\{|$)`);
 const PAWN_NEW_CLASS_RE = new RegExp(`\\bnew\\s+(${PAWN_IDENTIFIER_SOURCE})\\s*\\(`, "g");
 const OOP_THIS_DEFINE_RE = new RegExp(`^\\s*#\\s*define\\s+this\\.\\s+THIS__\\s*\\(\\s*(${PAWN_IDENTIFIER_SOURCE})\\s*\\)`);
 const OOP_THIS_UNDEF_RE = /^\s*#\s*undef\s+this\b/;
@@ -66,7 +67,7 @@ const PAWN_BUILTIN_TYPES = new Set([
     "stock",
     "void"
 ]);
-const OOP_HELPER_MEMBERS = new Set(["Alloc", "Delete", "IsValid"]);
+const OOP_HELPER_MEMBERS = new Set(["Alloc", "Delete", "IsValid", "Is", "Cast"]);
 const MYSQL_QUERY_FUNCTIONS = new Set([
     "mysql_format",
     "mysql_query",
@@ -126,29 +127,31 @@ function activate(context) {
     const referenceProvider = new PawnReferenceProvider(index);
     const includeLinkProvider = new PawnIncludeLinkProvider();
     const sqlSnippetCompletionProvider = new SqlSnippetCompletionProvider();
+    const oopCompletionProvider = new PawnOopCompletionProvider(index);
+    const hoverProvider = new PawnHoverProvider(index);
 
-    context.subscriptions.push(index, highlighter, numericValueHints, sqlHighlighter, mysqlDiagnostics, semanticProvider, definitionProvider, referenceProvider, includeLinkProvider, sqlSnippetCompletionProvider);
-    context.subscriptions.push(vscode.commands.registerCommand("livePawnHelper.reindex", async () => {
+    context.subscriptions.push(index, highlighter, numericValueHints, sqlHighlighter, mysqlDiagnostics, semanticProvider, definitionProvider, referenceProvider, includeLinkProvider, sqlSnippetCompletionProvider, oopCompletionProvider, hoverProvider);
+    context.subscriptions.push(vscode.commands.registerCommand("neoPawnHelper.reindex", async () => {
         await index.rebuild();
         highlighter.updateVisibleEditors();
         sqlHighlighter.updateVisibleEditors();
         mysqlDiagnostics.updateOpenDocuments();
-        vscode.window.setStatusBarMessage("Live Pawn Helper: workspace reindexed", 2500);
+        vscode.window.setStatusBarMessage("NeoPawn Helper: проект переиндексирован", 2500);
     }));
-    context.subscriptions.push(vscode.commands.registerCommand("livePawnHelper.generateEnumFromCreateTable", () => {
+    context.subscriptions.push(vscode.commands.registerCommand("neoPawnHelper.generateEnumFromCreateTable", () => {
         generateEnumFromCreateTableCommand();
     }));
-    context.subscriptions.push(vscode.commands.registerCommand("livePawnHelper.openIncludePath", async (target) => {
+    context.subscriptions.push(vscode.commands.registerCommand("neoPawnHelper.openIncludePath", async (target) => {
         await openIncludePath(target);
     }));
 
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
         if (
-            event.affectsConfiguration("livePawnHelper.index") ||
-            event.affectsConfiguration("livePawnHelper.colors") ||
-            event.affectsConfiguration("livePawnHelper.constants") ||
-            event.affectsConfiguration("livePawnHelper.sql") ||
-            event.affectsConfiguration("livePawnHelper.definitions")
+            event.affectsConfiguration("neoPawnHelper.index") ||
+            event.affectsConfiguration("neoPawnHelper.colors") ||
+            event.affectsConfiguration("neoPawnHelper.constants") ||
+            event.affectsConfiguration("neoPawnHelper.sql") ||
+            event.affectsConfiguration("neoPawnHelper.definitions")
         ) {
             index.scheduleRebuild();
             numericValueHints.refresh();
@@ -220,6 +223,7 @@ class PawnIndex {
         this.numericValues = new Map();
         this.mysqlCallbacks = new Map();
         this.classes = new Map();
+        this.classParents = new Map();
         this.classMembers = new Map();
         this.classVariables = new Map();
         this.fileEntries = new Map();
@@ -363,6 +367,7 @@ class PawnIndex {
         const nextNumericValues = new Map();
         const nextMysqlCallbacks = new Map();
         const nextClasses = new Map();
+        const nextClassParents = new Map();
         const nextClassMembers = new Map();
         const classVariableCandidates = new Map();
         const nextClassVariables = new Map();
@@ -374,6 +379,9 @@ class PawnIndex {
             mergeNumericValueMap(nextNumericValues, entry.numericValues);
             mergeRecordMap(nextMysqlCallbacks, entry.mysqlCallbacks);
             mergeRecordMap(nextClasses, entry.classes);
+            for (const [className, parent] of entry.classParents) {
+                nextClassParents.set(className, parent);
+            }
             mergeKeyedRecordMap(nextClassMembers, entry.classMembers);
             mergeRecordMap(classVariableCandidates, entry.classVariables);
         }
@@ -395,6 +403,7 @@ class PawnIndex {
         this.numericValues = nextNumericValues;
         this.mysqlCallbacks = nextMysqlCallbacks;
         this.classes = nextClasses;
+        this.classParents = nextClassParents;
         this.classMembers = nextClassMembers;
         this.classVariables = nextClassVariables;
     }
@@ -423,8 +432,37 @@ class PawnIndex {
         return this.classes.get(name) || [];
     }
 
+    findClasses() {
+        return Array.from(this.classes.entries()).map(([name, records]) => ({ name, records }));
+    }
+
     findClassMember(className, memberName) {
-        return this.classMembers.get(makeClassMemberKey(className, memberName)) || [];
+        const records = [];
+        const visited = new Set();
+        for (let current = className; current && !visited.has(current); current = this.classParents.get(current)?.name) {
+            visited.add(current);
+            records.push(...(this.classMembers.get(makeClassMemberKey(current, memberName)) || []));
+        }
+        return records;
+    }
+
+    findClassMembers(className) {
+        const records = [];
+        const visited = new Set();
+        for (let current = className; current && !visited.has(current); current = this.classParents.get(current)?.name) {
+            visited.add(current);
+            const prefix = `${current}.`;
+            for (const [key, members] of this.classMembers) {
+                if (key.startsWith(prefix)) {
+                    records.push(...members);
+                }
+            }
+        }
+        return records;
+    }
+
+    findClassParent(className) {
+        return this.classParents.get(className);
     }
 
     findClassVariable(name) {
@@ -771,6 +809,146 @@ class SqlSnippetCompletionProvider {
     }
 }
 
+class PawnOopCompletionProvider {
+    constructor(index) {
+        this.index = index;
+        this.disposable = vscode.languages.registerCompletionItemProvider(
+            [
+                { language: "pawn", scheme: "file" },
+                { pattern: "**/*.{pwn,inc,module}", scheme: "file" }
+            ],
+            this,
+            ".",
+            " "
+        );
+    }
+
+    dispose() {
+        this.disposable.dispose();
+    }
+
+    provideCompletionItems(document, position) {
+        if (!isPawnDocument(document)) {
+            return undefined;
+        }
+
+        const line = document.lineAt(position.line).text.slice(0, position.character);
+        const newMatch = line.match(/\bnew\s+([A-Za-z_][A-Za-z0-9_]*)?$/);
+        if (newMatch) {
+            return this.index.findClasses().map(({ name }) => {
+                const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Class);
+                item.detail = "Класс NeoPawn";
+                item.insertText = new vscode.SnippetString(`${name}($0)`);
+                return item;
+            });
+        }
+
+        const dot = line.lastIndexOf(".");
+        if (dot === -1) {
+            return undefined;
+        }
+
+        const className = resolveMemberAccessClassName(document, line.slice(0, dot + 1), position, this.index);
+        if (!className) {
+            return undefined;
+        }
+
+        const seen = new Set();
+        const items = [];
+        for (const record of this.index.findClassMembers(className)) {
+            if (seen.has(record.name) || record.kind === "class-constructor" || record.kind === "class-destructor") {
+                continue;
+            }
+            seen.add(record.name);
+            const callable = record.kind !== "class-field";
+            const item = new vscode.CompletionItem(
+                record.name,
+                callable ? vscode.CompletionItemKind.Method : vscode.CompletionItemKind.Field
+            );
+            item.detail = record.signature || `${record.className}.${record.name}`;
+            item.insertText = callable ? new vscode.SnippetString(`${record.name}($0)`) : record.name;
+            items.push(item);
+        }
+
+        const ownerMatch = line.slice(0, dot).match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+        const staticAccess = ownerMatch && isKnownPawnClass(this.index, ownerMatch[1]);
+        for (const name of staticAccess ? ["Is", "Cast"] : ["Delete", "IsValid"]) {
+            if (seen.has(name)) {
+                continue;
+            }
+            const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Method);
+            item.detail = "Встроенный метод NeoPawn";
+            item.insertText = new vscode.SnippetString(`${name}($0)`);
+            items.push(item);
+        }
+        return items;
+    }
+}
+
+class PawnHoverProvider {
+    constructor(index) {
+        this.index = index;
+        this.disposable = vscode.languages.registerHoverProvider(
+            [
+                { language: "pawn", scheme: "file" },
+                { pattern: "**/*.{pwn,inc,module}", scheme: "file" }
+            ],
+            this
+        );
+    }
+
+    dispose() {
+        this.disposable.dispose();
+    }
+
+    provideHover(document, position) {
+        const range = getPawnSymbolRangeAtPosition(document, position);
+        if (!range) {
+            return undefined;
+        }
+
+        const word = document.getText(range);
+        const context = getPawnClassReferenceContext(document, range, word, this.index);
+        if (!context) {
+            return undefined;
+        }
+
+        if (context.kind === "class") {
+            const parent = this.index.findClassParent(context.className);
+            const markdown = new vscode.MarkdownString();
+            markdown.appendCodeblock(
+                parent ? `class ${context.className} extends ${parent.name}` : `class ${context.className}`,
+                "pawn"
+            );
+            return new vscode.Hover(markdown, context.originRange);
+        }
+
+        const record = this.index.findClassMember(context.className, context.memberName)[0];
+        if (!record) {
+            if (OOP_HELPER_MEMBERS.has(context.memberName)) {
+                const signatures = {
+                    Delete: "void Delete()",
+                    IsValid: "bool IsValid()",
+                    Is: `bool ${context.className}.Is(${context.className} value)`,
+                    Cast: `${context.className} ${context.className}.Cast(${context.className} value)`
+                };
+                const markdown = new vscode.MarkdownString();
+                markdown.appendCodeblock(signatures[context.memberName], "pawn");
+                markdown.appendMarkdown("\n\nВстроенный метод NeoPawn.");
+                return new vscode.Hover(markdown, context.originRange);
+            }
+            return undefined;
+        }
+
+        const markdown = new vscode.MarkdownString();
+        markdown.appendCodeblock(record.signature || `${record.className}.${record.name}`, "pawn");
+        if (record.className !== context.className) {
+            markdown.appendMarkdown(`\n\nУнаследовано от \`${record.className}\`.`);
+        }
+        return new vscode.Hover(markdown, context.originRange);
+    }
+}
+
 class PawnDefinitionProvider {
     constructor(index) {
         this.index = index;
@@ -873,8 +1051,11 @@ class PawnDefinitionProvider {
     findPawnClassDefinitions(context) {
         if (context.kind === "class") {
             if (context.preferConstructor) {
-                const constructors = this.index.findClassMember(context.className, context.className)
+                let constructors = this.index.findClassMember(context.className, context.className)
                     .concat(this.index.findClassMember(context.className, "constructor"));
+                if (context.arity !== undefined) {
+                    constructors = constructors.filter((record) => record.arity === context.arity);
+                }
                 if (constructors.length) {
                     return constructors;
                 }
@@ -986,7 +1167,7 @@ class PawnIncludeLinkProvider {
             }
 
             const targetUri = target.isDirectory
-                ? vscode.Uri.parse(`command:livePawnHelper.openIncludePath?${encodeURIComponent(JSON.stringify([target.uri.toString()]))}`)
+                ? vscode.Uri.parse(`command:neoPawnHelper.openIncludePath?${encodeURIComponent(JSON.stringify([target.uri.toString()]))}`)
                 : target.uri;
             const link = new vscode.DocumentLink(
                 new vscode.Range(
@@ -1121,6 +1302,7 @@ function scanPawnTextToEntry(uri, text) {
         numericValues: new Map(),
         mysqlCallbacks: new Map(),
         classes: new Map(),
+        classParents: new Map(),
         classMembers: new Map(),
         classVariables: new Map()
     };
@@ -1318,6 +1500,16 @@ function scanPawnClasses(uri, text, entry) {
             );
             addRecord(entry.classes, record);
             addRecord(entry.symbols, record);
+            if (classDeclaration.parentName) {
+                entry.classParents.set(classDeclaration.name, {
+                    name: classDeclaration.parentName,
+                    uri,
+                    range: new vscode.Range(
+                        new vscode.Position(item.line, classDeclaration.parentStart),
+                        new vscode.Position(item.line, classDeclaration.parentEnd)
+                    )
+                });
+            }
 
             if (code.includes("{")) {
                 activeClass = {
@@ -1405,14 +1597,27 @@ function parsePawnClassDeclaration(line) {
         return undefined;
     }
 
-    const name = match[1];
+    const modifier = match[1];
+    const name = match[2];
+    const parentName = match[4];
     const nameStart = line.indexOf(name, match.index);
+    const classKeywordStart = line.indexOf("class", match.index);
+    const parentStart = parentName ? line.indexOf(parentName, nameStart + name.length) : -1;
     return {
         name,
-        keywordStart: line.indexOf("class", match.index),
-        keywordEnd: line.indexOf("class", match.index) + "class".length,
+        modifier,
+        modifierStart: modifier ? line.indexOf(modifier, match.index) : -1,
+        modifierEnd: modifier ? line.indexOf(modifier, match.index) + modifier.length : -1,
+        keywordStart: classKeywordStart,
+        keywordEnd: classKeywordStart + "class".length,
         nameStart,
-        nameEnd: nameStart + name.length
+        nameEnd: nameStart + name.length,
+        extendsKeyword: match[3],
+        extendsStart: match[3] ? line.indexOf(match[3], nameStart + name.length) : -1,
+        extendsEnd: match[3] ? line.indexOf(match[3], nameStart + name.length) + match[3].length : -1,
+        parentName,
+        parentStart,
+        parentEnd: parentName ? parentStart + parentName.length : -1
     };
 }
 
@@ -1431,19 +1636,23 @@ function parseClassMethodDeclaration(line, code, className) {
         return undefined;
     }
 
-    const nameMatch = beforeOpen.match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+    const nameMatch = beforeOpen.match(/(~?)([A-Za-z_][A-Za-z0-9_]*)\s*$/);
     if (!nameMatch) {
         return undefined;
     }
 
-    const name = nameMatch[1];
+    const destructor = nameMatch[1] === "~";
+    const name = nameMatch[2];
     if (CONTROL_WORDS.has(name)) {
         return undefined;
     }
 
     const nameStart = beforeOpen.lastIndexOf(name);
-    const prefix = beforeOpen.slice(0, nameStart).trim();
-    if (!prefix && name !== className && name !== "constructor") {
+    const prefix = beforeOpen.slice(0, destructor ? nameStart - 1 : nameStart).trim();
+    if (!prefix && name !== className && name !== "constructor" && !destructor) {
+        return undefined;
+    }
+    if (destructor && name !== className) {
         return undefined;
     }
 
@@ -1457,17 +1666,24 @@ function parseClassMethodDeclaration(line, code, className) {
         return undefined;
     }
 
-    const prefixWords = prefix.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-    const returnType = prefixWords.length ? prefixWords[prefixWords.length - 1] : className;
+    const prefixWords = (prefix.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [])
+        .filter((word) => !new RegExp(`^(?:${OOP_MEMBER_MODIFIERS_SOURCE})$`).test(word));
+    const returnType = destructor ? undefined : (prefixWords.length ? prefixWords[prefixWords.length - 1] : className);
     const returnTypeStart = prefixWords.length ? beforeOpen.lastIndexOf(returnType, nameStart) : -1;
-    const kind = name === className || name === "constructor" ? "class-constructor" : "class-method";
+    const kind = destructor
+        ? "class-destructor"
+        : (name === className || name === "constructor" ? "class-constructor" : "class-method");
+    const argumentsText = code.slice(open + 1, close).trim();
+    const arity = argumentsText ? splitTopLevelSegments(argumentsText, 0).length : 0;
     return {
-        name,
+        name: destructor ? `~${name}` : name,
         kind,
         returnType,
         returnTypeStart,
         start: nameStart,
-        end: nameStart + name.length
+        end: nameStart + name.length,
+        arity,
+        signature: line.trim()
     };
 }
 
@@ -1478,7 +1694,9 @@ function parseClassFieldDeclaration(line, code) {
     }
 
     const beforeAssign = line.slice(0, semicolon).split("=")[0];
-    let match = beforeAssign.match(/^\s*(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)/);
+    const modifiers = beforeAssign.match(new RegExp(`^\\s*(?:(?:${OOP_MEMBER_MODIFIERS_SOURCE}|const)\\s+)*`))[0];
+    const declaration = beforeAssign.slice(modifiers.length);
+    let match = declaration.match(/^(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)/);
     let typeName;
     let typeStart = -1;
     let name;
@@ -1487,24 +1705,24 @@ function parseClassFieldDeclaration(line, code) {
     if (match) {
         typeName = match[1];
         name = match[2];
-        typeStart = beforeAssign.indexOf(typeName, match.index);
-        start = beforeAssign.indexOf(name, beforeAssign.indexOf(":", typeStart) + 1);
+        typeStart = modifiers.length + declaration.indexOf(typeName, match.index);
+        start = modifiers.length + declaration.indexOf(name, declaration.indexOf(":", match.index) + 1);
     } else {
-        match = beforeAssign.match(/^\s*(?:new\s+)?(?:(?:const|static)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)/);
+        match = declaration.match(/^(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[&*]\s*)?([A-Za-z_][A-Za-z0-9_]*)/);
         if (match) {
             typeName = match[1];
             name = match[2];
-            typeStart = beforeAssign.indexOf(typeName, match.index);
-            start = beforeAssign.indexOf(name, typeStart + typeName.length);
+            typeStart = modifiers.length + declaration.indexOf(typeName, match.index);
+            start = modifiers.length + declaration.indexOf(name, declaration.indexOf(typeName, match.index) + typeName.length);
         } else {
-            match = beforeAssign.match(/^\s*(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
+            match = declaration.match(/^(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
             if (!match) {
                 return undefined;
             }
 
             typeName = undefined;
             name = match[1];
-            start = beforeAssign.indexOf(name, match.index);
+            start = modifiers.length + declaration.indexOf(name, match.index);
         }
     }
 
@@ -1518,7 +1736,8 @@ function parseClassFieldDeclaration(line, code) {
         typeName,
         typeStart,
         start,
-        end: start + name.length
+        end: start + name.length,
+        signature: line.trim()
     };
 }
 
@@ -1540,7 +1759,7 @@ function parseClassVariableDeclarationItems(line, acceptsClassName, allowUpperca
         return [];
     }
 
-    let match = statement.match(new RegExp(`^\\s*(?:new|static)\\s+(${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*(.*)$`));
+    let match = statement.match(new RegExp(`^\\s*(?:new|static|owned)\\s+(${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*(.*)$`));
     if (match) {
         const className = match[1];
         if (!isPawnClassNameCandidate(className, acceptsClassName, allowUppercaseFallback)) {
@@ -1553,7 +1772,7 @@ function parseClassVariableDeclarationItems(line, acceptsClassName, allowUpperca
         return parseClassVariableItemsFromRest(className, rest, restOffset, classStart);
     }
 
-    match = statement.match(new RegExp(`^\\s*(?:(?:new|static)\\s+)?(${PAWN_IDENTIFIER_SOURCE})\\s+(.*)$`));
+    match = statement.match(new RegExp(`^\\s*(?:(?:new|static|owned|const)\\s+)*(${PAWN_IDENTIFIER_SOURCE})\\s+(.*)$`));
     if (!match) {
         return [];
     }
@@ -1597,6 +1816,48 @@ function parseClassVariableItemsFromRest(className, rest, restOffset, classStart
     return items;
 }
 
+function parseClassParameterDeclarations(line, uri, lineNumber, acceptsClassName) {
+    const code = maskStrings(line);
+    const open = code.indexOf("(");
+    const close = code.lastIndexOf(")");
+    if (open === -1 || close <= open) {
+        return [];
+    }
+
+    const records = [];
+    const parameters = line.slice(open + 1, close);
+    for (const segment of splitTopLevelSegments(parameters, open + 1)) {
+        const text = segment.text.trim();
+        let match = text.match(new RegExp(`^(?:(?:const|owned)\\s+)*(${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*(&?${PAWN_IDENTIFIER_SOURCE})`));
+        let className;
+        let name;
+        if (match) {
+            className = match[1];
+            name = match[2].replace(/^&/, "");
+        } else {
+            match = text.match(new RegExp(`^(?:(?:const|owned)\\s+)*(${PAWN_IDENTIFIER_SOURCE})\\s+(?:[&*]\\s*)?(${PAWN_IDENTIFIER_SOURCE})`));
+            if (!match) {
+                continue;
+            }
+            className = match[1];
+            name = match[2];
+        }
+
+        if (!isPawnClassNameCandidate(className, acceptsClassName, false)) {
+            continue;
+        }
+
+        const nameStart = segment.offset + segment.text.indexOf(name);
+        records.push({
+            ...makeRecord(name, "class-var", uri, lineNumber, nameStart, nameStart + name.length),
+            className,
+            classStart: segment.offset + segment.text.indexOf(className),
+            classEnd: segment.offset + segment.text.indexOf(className) + className.length
+        });
+    }
+    return records;
+}
+
 function isPawnClassNameCandidate(name, acceptsClassName, allowUppercaseFallback) {
     if (!name || isIgnoredPawnType(name)) {
         return false;
@@ -1619,14 +1880,22 @@ function addClassMemberRecord(entry, className, member, uri, lineNumber) {
     const record = {
         ...makeRecord(member.name, member.kind, uri, lineNumber, member.start, member.end),
         className,
-        returnType: member.returnType
+        returnType: member.returnType,
+        arity: member.arity,
+        signature: member.signature
     };
     addRecordByKey(entry.classMembers, makeClassMemberKey(className, member.name), record);
 
     if (member.kind === "class-constructor") {
         addRecordByKey(entry.classMembers, makeClassMemberKey(className, "constructor"), record);
-        addRecord(entry.symbols, { ...record, name: `${className}_Ctor` });
-        addRecord(entry.symbols, { ...record, name: `${className}_New` });
+        for (const name of [`${className}_Ctor`, `${className}_Ctor${member.arity}`, `${className}_New`, `${className}_New${member.arity}`]) {
+            addRecord(entry.symbols, { ...record, name });
+        }
+        return;
+    }
+
+    if (member.kind === "class-destructor") {
+        addRecord(entry.symbols, { ...record, name: `${className}_Dtor` });
         return;
     }
 
@@ -1747,8 +2016,15 @@ function buildPawnSemanticTokens(document, index) {
         const classDeclaration = !activeClass && braceDepth === 0 ? parsePawnClassDeclaration(stripped) : undefined;
 
         if (classDeclaration) {
+            if (classDeclaration.modifier) {
+                addSemanticToken(tokens, classDeclaration.modifierStart, classDeclaration.modifierEnd - classDeclaration.modifierStart, "keyword");
+            }
             addSemanticToken(tokens, classDeclaration.keywordStart, classDeclaration.keywordEnd - classDeclaration.keywordStart, "keyword");
             addSemanticToken(tokens, classDeclaration.nameStart, classDeclaration.nameEnd - classDeclaration.nameStart, "class");
+            if (classDeclaration.extendsKeyword) {
+                addSemanticToken(tokens, classDeclaration.extendsStart, classDeclaration.extendsEnd - classDeclaration.extendsStart, "keyword");
+                addSemanticToken(tokens, classDeclaration.parentStart, classDeclaration.parentEnd - classDeclaration.parentStart, "class");
+            }
 
             if (code.includes("{")) {
                 activeClass = {
@@ -1777,6 +2053,8 @@ function buildPawnSemanticTokens(document, index) {
 
         addNewClassTokens(tokens, code, index);
         addMemberAccessTokens(tokens, code);
+        addOopKeywordTokens(tokens, code);
+        addKnownClassTokens(tokens, code, index);
         addPawnNamespaceTokens(tokens, code);
         pushSemanticTokens(builder, tokens, item.line);
 
@@ -1816,6 +2094,12 @@ function addClassMemberDeclarationTokens(tokens, line, code, className) {
         addSemanticToken(tokens, member.returnTypeStart, member.returnType.length, "type");
     }
 
+    const prefix = line.slice(0, member.start);
+    const modifierRe = new RegExp(`\\b(${OOP_MEMBER_MODIFIERS_SOURCE})\\b`, "g");
+    let modifierMatch;
+    while ((modifierMatch = modifierRe.exec(prefix)) !== null) {
+        addSemanticToken(tokens, modifierMatch.index, modifierMatch[1].length, "keyword");
+    }
     addSemanticToken(tokens, member.start, member.end - member.start, member.kind === "class-field" ? "property" : "method");
 }
 
@@ -1859,6 +2143,24 @@ function addMemberAccessTokens(tokens, line) {
         }
 
         addSemanticToken(tokens, memberStart, member.length, tokenType);
+    }
+}
+
+function addOopKeywordTokens(tokens, line) {
+    const keywordRe = new RegExp(`\\b(${OOP_MEMBER_MODIFIERS_SOURCE}|class|extends|owned|new|base)\\b`, "g");
+    let match;
+    while ((match = keywordRe.exec(line)) !== null) {
+        addSemanticToken(tokens, match.index, match[1].length, "keyword");
+    }
+}
+
+function addKnownClassTokens(tokens, line, index) {
+    const identifierRe = new RegExp(`\\b${PAWN_IDENTIFIER_SOURCE}\\b`, "g");
+    let match;
+    while ((match = identifierRe.exec(line)) !== null) {
+        if (isKnownPawnClass(index, match[0])) {
+            addSemanticToken(tokens, match.index, match[0].length, "class");
+        }
     }
 }
 
@@ -2032,7 +2334,7 @@ function collectMysqlDiagnostics(document) {
             `mysql_format expects ${placeholders} value argument(s) for ${MYSQL_FORMAT_SPECIFIER_LABEL}, but ${providedArgs} provided.`,
             vscode.DiagnosticSeverity.Warning
         );
-        diagnostic.source = "Pawn Helper";
+        diagnostic.source = "NeoPawn Helper";
         diagnostics.push(diagnostic);
     }
 
@@ -2474,6 +2776,20 @@ function getPawnSymbolRangeAtPosition(document, position) {
 }
 
 function getPawnClassReferenceContext(document, wordRange, word, index) {
+    if (word === "base") {
+        const activeClass = getEnclosingPawnClass(document, wordRange.start.line);
+        const parent = activeClass ? index.findClassParent(activeClass.name) : undefined;
+        if (parent) {
+            return {
+                kind: "class",
+                className: parent.name,
+                preferConstructor: true,
+                arity: getCallArity(document.lineAt(wordRange.start.line).text.slice(wordRange.end.character)),
+                originRange: wordRange
+            };
+        }
+    }
+
     const memberContext = getPawnClassMemberReferenceContext(document, wordRange, word, index);
     if (memberContext) {
         return memberContext;
@@ -2592,11 +2908,25 @@ function getPawnClassNameReferenceContext(document, wordRange, word, index) {
         };
     }
 
+    if (
+        classDeclaration?.parentName === word &&
+        wordRange.start.character >= classDeclaration.parentStart &&
+        wordRange.end.character <= classDeclaration.parentEnd
+    ) {
+        return {
+            kind: "class",
+            className: word,
+            preferConstructor: false,
+            originRange: wordRange
+        };
+    }
+
     if (/\bnew\s*$/.test(beforeWord) && /^\s*\(/.test(afterWord)) {
         return {
             kind: "class",
             className: word,
             preferConstructor: true,
+            arity: getCallArity(afterWord),
             originRange: wordRange
         };
     }
@@ -2612,6 +2942,51 @@ function getPawnClassNameReferenceContext(document, wordRange, word, index) {
         }
     }
 
+    for (const record of parseClassParameterDeclarations(line, document.uri, wordRange.start.line, (name) => isKnownPawnClass(index, name))) {
+        if (wordRange.start.character >= record.classStart && wordRange.end.character <= record.classEnd) {
+            return {
+                kind: "class",
+                className: word,
+                preferConstructor: false,
+                originRange: wordRange
+            };
+        }
+    }
+
+    if (
+        /^\s*(?::|[&*]?\s*[A-Za-z_])/.test(afterWord) &&
+        /(?:^|[\s,(])(?:const\s+|owned\s+|static\s+|new\s+)*$/.test(beforeWord)
+    ) {
+        return {
+            kind: "class",
+            className: word,
+            preferConstructor: false,
+            originRange: wordRange
+        };
+    }
+
+    return undefined;
+}
+
+function getCallArity(text) {
+    const open = text.indexOf("(");
+    if (open === -1) {
+        return undefined;
+    }
+
+    let depth = 0;
+    let quote = false;
+    for (let index = open; index < text.length; index++) {
+        const char = text[index];
+        if (char === "\"" && text[index - 1] !== "\\") {
+            quote = !quote;
+        } else if (!quote && char === "(") {
+            depth++;
+        } else if (!quote && char === ")" && --depth === 0) {
+            const argumentsText = text.slice(open + 1, index).trim();
+            return argumentsText ? splitTopLevelSegments(argumentsText, 0).length : 0;
+        }
+    }
     return undefined;
 }
 
@@ -2684,6 +3059,12 @@ function findLocalClassVariableDefinition(document, variableName, position, inde
             (name) => isKnownPawnClass(index, name),
             false
         );
+        records.push(...parseClassParameterDeclarations(
+            stripped,
+            document.uri,
+            item.line,
+            (name) => isKnownPawnClass(index, name)
+        ));
 
         for (const record of records) {
             if (record.name === variableName) {
@@ -3759,7 +4140,7 @@ async function generateEnumFromCreateTableCommand() {
         edit.insert(insertPosition, `${prefix}\n${enumText}\n`);
     });
     await vscode.env.clipboard.writeText(enumText);
-    vscode.window.setStatusBarMessage("Pawn Helper: enum generated from CREATE TABLE and copied to clipboard", 3000);
+    vscode.window.setStatusBarMessage("NeoPawn Helper: enum из CREATE TABLE скопирован в буфер обмена", 3000);
 }
 
 function getSqlTextAtPosition(document, position) {
@@ -3933,7 +4314,7 @@ function toPawnEnumName(value) {
 }
 
 function getConfig() {
-    return vscode.workspace.getConfiguration("livePawnHelper");
+    return vscode.workspace.getConfiguration("neoPawnHelper");
 }
 
 function isPawnDocument(document) {
@@ -3946,5 +4327,15 @@ function isPawnDocument(document) {
 
 module.exports = {
     activate,
-    deactivate
+    deactivate,
+    _test: {
+        PawnIndex,
+        parsePawnClassDeclaration,
+        parseClassMemberDeclaration,
+        parseClassVariableDeclarationItems,
+        parseClassParameterDeclarations,
+        getCallArity,
+        getPawnClassReferenceContext,
+        scanPawnTextToEntry
+    }
 };

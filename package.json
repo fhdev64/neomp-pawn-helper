@@ -2,7 +2,7 @@
   "name": "neopawn-helper",
   "displayName": "NeoPawn Helper",
   "description": "Полная поддержка NeoPawn и классического Pawn в Visual Studio Code.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "saintantony",
   "license": "UNLICENSED",
   "repository": {

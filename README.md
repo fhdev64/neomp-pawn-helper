@@ -123,7 +123,7 @@ Float:Entity_GetAngle(Entity:this__)
 
 1. Откройте раздел расширений VS Code.
 2. Выберите меню `…` → `Установить из VSIX…`.
-3. Укажите `neopawn-helper-1.0.0.vsix`.
+3. Укажите `neopawn-helper-1.0.1.vsix`.
 4. Перезагрузите окно редактора.
 
 ## Разработка

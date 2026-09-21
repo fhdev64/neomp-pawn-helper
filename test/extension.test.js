@@ -28,10 +28,35 @@ class EventEmitter {
     dispose() {}
 }
 
+class SemanticTokensBuilder {
+    constructor() {
+        this.tokens = [];
+    }
+
+    push(line, start, length, tokenType) {
+        this.tokens.push({ line, start, length, tokenType });
+    }
+
+    build() {
+        return this.tokens;
+    }
+}
+
+class InlayHint {
+    constructor(position, label, kind) {
+        this.position = position;
+        this.label = label;
+        this.kind = kind;
+    }
+}
+
 const vscodeMock = {
     Position,
     Range,
     EventEmitter,
+    InlayHint,
+    InlayHintKind: { Type: 1 },
+    SemanticTokensBuilder,
     SemanticTokensLegend: class {},
     workspace: {
         getConfiguration() {
@@ -51,6 +76,13 @@ const {
     parseClassMemberDeclaration,
     parseClassVariableDeclarationItems,
     parseClassParameterDeclarations,
+    parseFunctionDefinition,
+    parseFunctionParameters,
+    parseGlobalDeclarations,
+    collectNumericValueHints,
+    buildPawnSemanticTokens,
+    PAWN_SEMANTIC_TYPES,
+    decodePawnBytes,
     getCallArity,
     getPawnClassReferenceContext,
     scanPawnTextToEntry
@@ -109,6 +141,26 @@ assert.deepEqual(parameters.map((record) => [record.className, record.name]), [
 ]);
 assert.equal(getCallArity("(1, System_Read(2, 3), \"a,b\")"), 3);
 assert.equal(getCallArity("()"), 0);
+assert.equal(decodePawnBytes(Buffer.from("тест", "utf8")), "тест");
+assert.equal(decodePawnBytes(Buffer.from([0xF2, 0xE5, 0xF1, 0xF2])), "тест");
+
+const cFunction = "int Compiler_Count(int head, va_args<>)";
+const functionRecord = parseFunctionDefinition(cFunction, cFunction, uri, 0);
+assert.equal(functionRecord.name, "Compiler_Count");
+assert.deepEqual(
+    parseFunctionParameters(cFunction, functionRecord, uri, 0).map((record) => record.name),
+    ["head"]
+);
+assert.deepEqual(
+    parseGlobalDeclarations("const int COMPILER_CHECK_ARGS = 4;", uri, 0).map((record) => record.name),
+    ["COMPILER_CHECK_ARGS"]
+);
+assert.deepEqual(
+    parseGlobalDeclarations("new Float:g_Angle, g_Target;", uri, 0).map((record) => record.name),
+    ["g_Angle", "g_Target"]
+);
+assert.equal(parseFunctionDefinition("Float:System_Read(Float:value)", "Float:System_Read(Float:value)", uri, 0).name, "System_Read");
+assert.equal(parseFunctionDefinition("forward Legacy(value);", "forward Legacy(value);", uri, 0).name, "Legacy");
 
 const source = [
     "abstract class Entity[32] {",
@@ -148,6 +200,79 @@ assert.equal(index.findClassMember("Player", "id")[0].className, "Entity");
 assert.equal(index.findClassMember("Player", "GetId")[0].className, "Player");
 assert.equal(index.findClassParent("Player").name, "Entity");
 assert(index.findClassVariable("current").length === 1);
+
+const constantsEntry = scanPawnTextToEntry(uri, [
+    "const int LIMIT = 4;",
+    "const char LETTER = 65;",
+    "int value = LIMIT;"
+].join("\n"));
+assert(constantsEntry.numericValues.has("LIMIT"));
+assert(constantsEntry.numericValues.has("LETTER"));
+assert(!constantsEntry.numericValues.has("int"));
+assert(!constantsEntry.numericValues.has("char"));
+
+const legacyEntry = scanPawnTextToEntry(uri, [
+    "#define COLOR_RED 0xFF0000FF",
+    "#define LEGACY_LIMIT 16",
+    "enum E_LEGACY",
+    "{",
+    "    E_LEGACY_NONE = 0",
+    "}",
+    "new Float:g_LegacyValue;",
+    "stock Float:Legacy::Read(Float:value)",
+    "{",
+    "    return value;",
+    "}",
+    "global LegacyGlobal();",
+    "foreign LegacyForeign();"
+].join("\n"));
+for (const name of ["COLOR_RED", "LEGACY_LIMIT", "E_LEGACY", "E_LEGACY_NONE", "g_LegacyValue", "Legacy::Read", "LegacyGlobal", "LegacyForeign"]) {
+    assert(legacyEntry.symbols.has(name), `Legacy Pawn symbol ${name} is missing.`);
+}
+assert(legacyEntry.colors.has("COLOR_RED"));
+assert.equal(legacyEntry.numericValues.get("LEGACY_LIMIT").value, "16");
+
+const hintDocument = {
+    uri,
+    getText() {
+        return "int value = LIMIT;\nchar letter = LETTER;";
+    },
+    positionAt(offset) {
+        const before = this.getText().slice(0, offset).split("\n");
+        return new Position(before.length - 1, before[before.length - 1].length);
+    }
+};
+const hintIndex = {
+    getColor() { return undefined; },
+    getNumericValue(name) { return constantsEntry.numericValues.get(name); }
+};
+const hints = collectNumericValueHints(hintDocument, undefined, hintIndex);
+assert.deepEqual(hints.map((hint) => [hint.position.line, hint.position.character, hint.label]), [
+    [0, 17, "4"],
+    [1, 20, "65"]
+]);
+
+const semanticSource = [
+    "int Compiler_Count(int head)",
+    "{",
+    "    int value = head;",
+    "    return value;",
+    "}"
+].join("\n");
+const semanticDocument = { getText() { return semanticSource; } };
+const semanticTokens = buildPawnSemanticTokens(semanticDocument, index);
+function hasSemanticToken(line, text, type) {
+    const sourceLine = semanticSource.split("\n")[line];
+    const start = sourceLine.indexOf(text);
+    return semanticTokens.some((token) =>
+        token.line === line && token.start === start && token.length === text.length &&
+        PAWN_SEMANTIC_TYPES[token.tokenType] === type
+    );
+}
+assert(hasSemanticToken(0, "int", "type"));
+assert(hasSemanticToken(0, "Compiler_Count", "function"));
+assert(hasSemanticToken(0, "head", "parameter"));
+assert(hasSemanticToken(2, "value", "variable"));
 
 function documentFromLines(lines) {
     return {
@@ -198,8 +323,9 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "ut
 const grammar = JSON.parse(fs.readFileSync(path.join(root, "syntaxes", "neopawn.tmLanguage.json"), "utf8"));
 assert.equal(manifest.name, "neopawn-helper");
 assert.equal(manifest.displayName, "NeoPawn Helper");
-assert.equal(manifest.version, "1.0.0");
+assert.equal(manifest.version, "1.0.1");
 assert(manifest.contributes.grammars.some((item) => item.scopeName === "source.neopawn"));
 assert.equal(grammar.scopeName, "source.neopawn");
+assert.equal(grammar.repository.types.patterns[0].name, "storage.type.built-in.c");
 
 console.log("NeoPawn Helper: все тесты пройдены.");

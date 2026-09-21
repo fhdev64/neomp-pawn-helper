@@ -80,6 +80,17 @@ for (const file of files) {
 }
 index.rebuildIndexesFromEntries();
 
+for (const type of ["int", "char", "float", "bool", "void", "Float"]) {
+    assert(!index.numericValues.has(type), `Тип ${type} ошибочно добавлен как числовая константа.`);
+}
+
+if (fs.existsSync(path.join(root, "API", "docs", "compiler"))) {
+    assert(index.findSymbol("Compiler_Count").length, "C-функция Compiler_Count не проиндексирована.");
+    assert(index.findSymbol("g_CompilerState").length, "C-глобальная переменная g_CompilerState не проиндексирована.");
+    assert(index.findClass("CompilerState").length, "Класс CompilerState не проиндексирован.");
+    assert(index.findClassMember("CompilerState", "Run").length, "Метод CompilerState.Run не проиндексирован.");
+}
+
 let symbols = 0;
 for (const records of index.symbols.values()) {
     symbols += records.length;

@@ -8,19 +8,18 @@ const PAWN_IDENTIFIER_SOURCE = "[A-Za-z_][A-Za-z0-9_]*";
 const PAWN_SYMBOL_SOURCE = `${PAWN_IDENTIFIER_SOURCE}(?:::${PAWN_IDENTIFIER_SOURCE})?`;
 const PAWN_SYMBOL_RE = new RegExp(PAWN_SYMBOL_SOURCE, "g");
 const PAWN_NAMESPACE_RE = new RegExp(`\\b(${PAWN_IDENTIFIER_SOURCE})::(${PAWN_IDENTIFIER_SOURCE})\\b`, "g");
-const PAWN_OPTIONAL_TAG_SOURCE = `(?:(?:${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*)?`;
 const FUNCTION_KEYWORDS_SOURCE = "stock|static|public|forward|native|hook|timer|ptask|task";
 const EXTERNAL_FUNCTION_KEYWORDS_SOURCE = "global|foreign";
-const FUNCTION_DEFINITION_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\([^;]*\\)\\s*(?:\\{|$)`);
-const EXTERNAL_FUNCTION_RE = new RegExp(`^\\s*(${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
-const FUNCTION_CONTEXT_RE = new RegExp(`^\\s*(?:(?:(${FUNCTION_KEYWORDS_SOURCE}|${EXTERNAL_FUNCTION_KEYWORDS_SOURCE})\\s+))*\\s*${PAWN_OPTIONAL_TAG_SOURCE}(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
+const ALL_FUNCTION_KEYWORDS_SOURCE = `${FUNCTION_KEYWORDS_SOURCE}|${EXTERNAL_FUNCTION_KEYWORDS_SOURCE}`;
+const FUNCTION_HEADER_RE = new RegExp(`^\\s*((?:(?:${ALL_FUNCTION_KEYWORDS_SOURCE})\\s+)*)((?:${PAWN_IDENTIFIER_SOURCE})\\s*:\\s*|(?:${PAWN_IDENTIFIER_SOURCE})\\s+)?(${PAWN_SYMBOL_SOURCE})\\s*\\(`);
 const OOP_MEMBER_MODIFIERS_SOURCE = "public|protected|private|static|property|readonly|virtual|override|abstract|final";
 const PAWN_CLASS_DECL_RE = new RegExp(`^\\s*(?:(abstract|final)\\s+)?class\\s+(${PAWN_IDENTIFIER_SOURCE})(?:\\s*\\[[^\\]]*\\])?(?:\\s*(extends|:)\\s*(${PAWN_IDENTIFIER_SOURCE}))?\\s*(?:\\{|$)`);
 const PAWN_NEW_CLASS_RE = new RegExp(`\\bnew\\s+(${PAWN_IDENTIFIER_SOURCE})\\s*\\(`, "g");
 const OOP_THIS_DEFINE_RE = new RegExp(`^\\s*#\\s*define\\s+this\\.\\s+THIS__\\s*\\(\\s*(${PAWN_IDENTIFIER_SOURCE})\\s*\\)`);
 const OOP_THIS_UNDEF_RE = /^\s*#\s*undef\s+this\b/;
+const PAWN_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const PAWN_FILE_DECODER = new TextDecoder("windows-1251");
-const PAWN_SEMANTIC_TYPES = ["namespace", "function", "class", "property", "method", "variable", "keyword", "type"];
+const PAWN_SEMANTIC_TYPES = ["namespace", "function", "class", "property", "method", "variable", "parameter", "keyword", "type"];
 const PAWN_SEMANTIC_TYPE_INDEX = new Map(PAWN_SEMANTIC_TYPES.map((type, index) => [type, index]));
 const PAWN_SEMANTIC_LEGEND = new vscode.SemanticTokensLegend(PAWN_SEMANTIC_TYPES, []);
 const CONTROL_WORDS = new Set([
@@ -59,13 +58,39 @@ const SYMBOL_KIND_RANK = new Map([
 const PAWN_BUILTIN_TYPES = new Set([
     "bool",
     "char",
-    "const",
+    "DB",
+    "DBResult",
+    "File",
     "float",
     "Float",
     "int",
+    "String",
+    "va_args",
+    "void"
+]);
+const PAWN_VALUE_HINT_RESERVED = new Set([
+    ...PAWN_BUILTIN_TYPES,
+    ...CONTROL_WORDS,
+    "abstract",
+    "base",
+    "class",
+    "extends",
+    "final",
+    "foreign",
+    "global",
+    "hook",
+    "native",
+    "new",
+    "owned",
+    "private",
+    "property",
+    "protected",
+    "public",
+    "readonly",
     "static",
     "stock",
-    "void"
+    "virtual",
+    "override"
 ]);
 const OOP_HELPER_MEMBERS = new Set(["Alloc", "Delete", "IsValid", "Is", "Cast"]);
 const MYSQL_QUERY_FUNCTIONS = new Set([
@@ -413,7 +438,8 @@ class PawnIndex {
     }
 
     getNumericValue(name) {
-        return this.numericValues.get(name);
+        const value = this.numericValues.get(name);
+        return value?.ambiguous ? undefined : value;
     }
 
     findSymbol(name) {
@@ -1343,7 +1369,11 @@ function mergeNumericValueMap(target, source) {
 }
 
 function decodePawnBytes(bytes) {
-    return PAWN_FILE_DECODER.decode(bytes);
+    try {
+        return PAWN_UTF8_DECODER.decode(bytes);
+    } catch {
+        return PAWN_FILE_DECODER.decode(bytes);
+    }
 }
 
 async function findPawnFiles() {
@@ -1399,7 +1429,7 @@ function scanPawnText(uri, text, symbols, dialogs, colors, numericValues, mysqlC
             const color = parseColorFromText(body, true);
             if (color) {
                 colors.set(name, color);
-            } else if (stripped[nameIndex + name.length] !== "(") {
+            } else if (!PAWN_VALUE_HINT_RESERVED.has(name) && stripped[nameIndex + name.length] !== "(") {
                 const numericValue = parseNumericValueFromText(body);
                 if (numericValue) {
                     addNumericValue(numericValues, name, "define", numericValue, uri, lineNumber, nameIndex, nameIndex + name.length);
@@ -1975,7 +2005,7 @@ function collectNumericValueHints(document, range, index) {
         let match;
         while ((match = identifierRe.exec(code)) !== null) {
             const name = match[0];
-            if (index.getColor(name)) {
+            if (PAWN_VALUE_HINT_RESERVED.has(name) || index.getColor(name)) {
                 continue;
             }
 
@@ -2047,13 +2077,17 @@ function buildPawnSemanticTokens(document, index) {
 
         if (activeClass && item.line !== activeClass.line && braceDepth === activeClass.depth) {
             addClassMemberDeclarationTokens(tokens, stripped, code, activeClass.name);
+            addFunctionParameterTokens(tokens, stripped, index);
         } else {
             addClassVariableDeclarationTokens(tokens, stripped, index);
+            addFunctionDeclarationTokens(tokens, stripped, code, index);
+            addVariableDeclarationTokens(tokens, stripped, index);
         }
 
         addNewClassTokens(tokens, code, index);
         addMemberAccessTokens(tokens, code);
         addOopKeywordTokens(tokens, code);
+        addBuiltinTypeTokens(tokens, code);
         addKnownClassTokens(tokens, code, index);
         addPawnNamespaceTokens(tokens, code);
         pushSemanticTokens(builder, tokens, item.line);
@@ -2144,6 +2178,64 @@ function addMemberAccessTokens(tokens, line) {
 
         addSemanticToken(tokens, memberStart, member.length, tokenType);
     }
+}
+
+function addFunctionDeclarationTokens(tokens, line, code, index) {
+    const header = parseFunctionHeader(line);
+    if (!isFunctionDefinitionLine(code, header)) {
+        return;
+    }
+
+    for (const modifier of header.modifiers) {
+        const start = line.indexOf(modifier);
+        addSemanticToken(tokens, start, modifier.length, "keyword");
+    }
+    addTypeToken(tokens, header.returnType, header.returnTypeStart, index);
+
+    if (!header.name.includes("::")) {
+        addSemanticToken(tokens, header.nameStart, header.name.length, "function");
+    }
+    addFunctionParameterTokens(tokens, line, index, header.openParen);
+}
+
+function addFunctionParameterTokens(tokens, line, index, openParen) {
+    const code = maskStrings(line);
+    const open = openParen === undefined ? code.indexOf("(") : openParen;
+    const close = code.lastIndexOf(")");
+    if (open === -1 || close <= open) {
+        return;
+    }
+
+    for (const segment of splitTopLevelSegments(line.slice(open + 1, close), open + 1)) {
+        const item = parseVariableDeclarationSegment(segment, true);
+        if (!item || item.name === "va_args") {
+            continue;
+        }
+        addTypeToken(tokens, item.typeName, item.typeStart, index);
+        addSemanticToken(tokens, item.nameStart, item.name.length, "parameter");
+    }
+}
+
+function addVariableDeclarationTokens(tokens, line, index) {
+    for (const item of parseVariableDeclarationItems(line)) {
+        addTypeToken(tokens, item.typeName, item.typeStart, index);
+        addSemanticToken(tokens, item.nameStart, item.name.length, "variable");
+    }
+}
+
+function addBuiltinTypeTokens(tokens, line) {
+    const typeRe = new RegExp(`\\b(${Array.from(PAWN_BUILTIN_TYPES).join("|")})\\b`, "g");
+    let match;
+    while ((match = typeRe.exec(line)) !== null) {
+        addSemanticToken(tokens, match.index, match[1].length, "type");
+    }
+}
+
+function addTypeToken(tokens, typeName, start, index) {
+    if (!typeName || start < 0 || typeName === "_") {
+        return;
+    }
+    addSemanticToken(tokens, start, typeName.length, isKnownPawnClass(index, typeName) ? "class" : "type");
 }
 
 function addOopKeywordTokens(tokens, line) {
@@ -2544,97 +2636,102 @@ function findMysqlFormatPlaceholders(value) {
 }
 
 function parseFunctionDefinition(stripped, code, uri, lineNumber) {
-    const match = stripped.match(FUNCTION_DEFINITION_RE);
-    if (!match) {
+    const header = parseFunctionHeader(stripped);
+    if (!isFunctionDefinitionLine(code, header)) {
         return undefined;
     }
 
-    const name = match[2];
-    if (!name || CONTROL_WORDS.has(name)) {
-        return undefined;
+    return makeRecord(header.name, "function", uri, lineNumber, header.nameStart, header.nameEnd);
+}
+
+function isFunctionDefinitionLine(code, header) {
+    if (!header || CONTROL_WORDS.has(header.name)) {
+        return false;
     }
 
-    const prefix = stripped.slice(0, match.index + match[0].indexOf(name));
-    const hasDefinitionKeyword = /\b(stock|static|public|forward|native|hook|timer|ptask|task)\b/.test(prefix);
-    const afterParen = code.slice(match.index + match[0].length).trim();
-    const isLikelyDefinition = hasDefinitionKeyword || match[0].trimEnd().endsWith("{") || afterParen === "";
-    if (!isLikelyDefinition) {
-        return undefined;
+    const close = code.lastIndexOf(")");
+    if (close === -1) {
+        return false;
     }
 
-    const nameIndex = stripped.indexOf(name, match.index);
-    return makeRecord(name, "function", uri, lineNumber, nameIndex, nameIndex + name.length);
+    const suffix = code.slice(close + 1).trim();
+    return suffix.startsWith("{") || suffix === "" ||
+        (header.modifiers.length > 0 && (suffix.startsWith(";") || suffix.startsWith("=")));
 }
 
 function parseGlobalForeignFunction(stripped, uri, lineNumber) {
-    const match = stripped.match(EXTERNAL_FUNCTION_RE);
+    const header = parseFunctionHeader(stripped);
+    const keyword = header?.modifiers.find((modifier) => modifier === "global" || modifier === "foreign");
+    if (!header || !keyword) {
+        return undefined;
+    }
+
+    if (CONTROL_WORDS.has(header.name)) {
+        return undefined;
+    }
+
+    return makeRecord(
+        header.name,
+        keyword === "global" ? "global-function" : "foreign",
+        uri,
+        lineNumber,
+        header.nameStart,
+        header.nameEnd
+    );
+}
+
+function parseFunctionHeader(line) {
+    const match = line.match(FUNCTION_HEADER_RE);
     if (!match) {
         return undefined;
     }
 
-    const keyword = match[1];
-    const name = match[2];
-    if (!name || CONTROL_WORDS.has(name)) {
-        return undefined;
+    const modifiersText = match[1] || "";
+    const typeText = (match[2] || "").trim();
+    const name = match[3];
+    const nameStart = match.index + match[0].lastIndexOf(name);
+    let returnType;
+    let returnTypeStart = -1;
+
+    if (typeText) {
+        returnType = typeText.endsWith(":") ? typeText.slice(0, -1).trim() : typeText;
+        returnTypeStart = line.indexOf(returnType, match.index + modifiersText.length);
     }
 
-    const nameIndex = stripped.indexOf(name, match.index + keyword.length);
-    return makeRecord(name, keyword === "global" ? "global-function" : "foreign", uri, lineNumber, nameIndex, nameIndex + name.length);
+    const modifiers = [];
+    const modifierRe = new RegExp(`\\b(${ALL_FUNCTION_KEYWORDS_SOURCE})\\b`, "g");
+    let modifierMatch;
+    while ((modifierMatch = modifierRe.exec(modifiersText)) !== null) {
+        modifiers.push(modifierMatch[1]);
+    }
+
+    return {
+        name,
+        nameStart,
+        nameEnd: nameStart + name.length,
+        returnType,
+        returnTypeStart,
+        modifiers,
+        openParen: match.index + match[0].lastIndexOf("(")
+    };
 }
 
 function parseGlobalDeclarations(stripped, uri, lineNumber) {
-    const declarations = [];
-    const match = stripped.match(/^\s*(?:new|static|const)\b(.*)$/);
-    if (!match) {
-        return declarations;
-    }
-
-    const restStart = match.index + match[0].length - match[1].length;
-    const segments = splitTopLevelSegments(match[1], restStart);
-    for (const segment of segments) {
-        const beforeAssign = segment.text.split("=")[0];
-        const nameMatch = beforeAssign.match(/^\s*(?:(?:const|stock)\s+)*(?:(?:[A-Za-z_][A-Za-z0-9_]*)\s*:\s*)?([A-Za-z_][A-Za-z0-9_]*)/);
-        if (!nameMatch) {
-            continue;
-        }
-
-        const name = nameMatch[1];
-        if (CONTROL_WORDS.has(name)) {
-            continue;
-        }
-
-        const relativeNameIndex = beforeAssign.indexOf(name, nameMatch.index);
-        const nameIndex = segment.offset + relativeNameIndex;
-        declarations.push(makeRecord(name, "global", uri, lineNumber, nameIndex, nameIndex + name.length));
-    }
-
-    return declarations;
+    return parseVariableDeclarationItems(stripped).map((item) =>
+        makeRecord(item.name, "global", uri, lineNumber, item.nameStart, item.nameEnd)
+    );
 }
 
 function parseNumericConstDeclarations(stripped, uri, lineNumber) {
     const declarations = [];
-    const match = stripped.match(/^\s*((?:(?:new|static|stock|const)\b\s*)+)(.*)$/);
-    if (!match || !/\bconst\b/.test(match[1])) {
+    if (!/^\s*(?:(?:new|static|stock)\s+)*const\b/.test(stripped)) {
         return declarations;
     }
 
-    const rest = match[2];
-    const restStart = match.index + match[0].length - rest.length;
-    const segments = splitTopLevelSegments(rest, restStart);
-    for (const segment of segments) {
+    for (const item of parseVariableDeclarationItems(stripped)) {
+        const segment = item.segment;
         const assignIndex = segment.text.indexOf("=");
         if (assignIndex === -1) {
-            continue;
-        }
-
-        const beforeAssign = segment.text.slice(0, assignIndex);
-        const nameMatch = beforeAssign.match(/^\s*(?:(?:const|stock)\s+)*(?:(?:[A-Za-z_][A-Za-z0-9_]*)\s*:\s*)?([A-Za-z_][A-Za-z0-9_]*)/);
-        if (!nameMatch) {
-            continue;
-        }
-
-        const name = nameMatch[1];
-        if (CONTROL_WORDS.has(name)) {
             continue;
         }
 
@@ -2643,12 +2740,106 @@ function parseNumericConstDeclarations(stripped, uri, lineNumber) {
             continue;
         }
 
-        const relativeNameIndex = beforeAssign.indexOf(name, nameMatch.index);
-        const nameIndex = segment.offset + relativeNameIndex;
-        declarations.push(makeNumericValueRecord(name, "constant", numericValue, uri, lineNumber, nameIndex, nameIndex + name.length));
+        declarations.push(makeNumericValueRecord(
+            item.name,
+            "constant",
+            numericValue,
+            uri,
+            lineNumber,
+            item.nameStart,
+            item.nameEnd
+        ));
     }
 
     return declarations;
+}
+
+function parseVariableDeclarationItems(line) {
+    const code = maskStrings(line);
+    const semicolon = code.indexOf(";");
+    if (semicolon === -1 || code.slice(0, semicolon).includes("(")) {
+        return [];
+    }
+
+    const statement = line.slice(0, semicolon);
+    if (/^\s*(?:#|class\b|enum\b|return\b|if\b|for\b|while\b|switch\b|case\b)/.test(statement)) {
+        return [];
+    }
+
+    const segments = splitTopLevelSegments(statement, 0);
+    if (!segments.length) {
+        return [];
+    }
+
+    const first = parseVariableDeclarationSegment(segments[0], true);
+    if (!first || (!first.hasStorage && !first.typeName)) {
+        return [];
+    }
+
+    const items = [first];
+    for (const segment of segments.slice(1)) {
+        const item = parseVariableDeclarationSegment(segment, false);
+        if (item) {
+            items.push(item);
+        }
+    }
+    return items;
+}
+
+function parseVariableDeclarationSegment(segment, allowType) {
+    const beforeAssign = segment.text.split("=")[0];
+    const modifierMatch = beforeAssign.match(/^\s*(?:(?:new|static|stock|const|owned)\s+)*/);
+    const modifiers = modifierMatch ? modifierMatch[0] : "";
+    const hasStorage = /\b(?:new|static|stock|const|owned)\b/.test(modifiers);
+    const body = beforeAssign.slice(modifiers.length);
+    const bodyOffset = segment.offset + modifiers.length;
+    let match;
+    let typeName;
+    let typeStart = -1;
+    let name;
+    let relativeNameStart;
+
+    if (allowType) {
+        match = body.match(/^\s*([A-Za-z_][A-Za-z0-9_]*|_)\s*:\s*(?:[&*]\s*)?([A-Za-z_][A-Za-z0-9_]*)/);
+        if (match) {
+            typeName = match[1];
+            name = match[2];
+            typeStart = bodyOffset + body.indexOf(typeName, match.index);
+            relativeNameStart = body.indexOf(name, body.indexOf(":", match.index) + 1);
+        } else {
+            match = body.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+(?:[&*]\s*)?([A-Za-z_][A-Za-z0-9_]*)/);
+            if (match) {
+                typeName = match[1];
+                name = match[2];
+                typeStart = bodyOffset + body.indexOf(typeName, match.index);
+                relativeNameStart = body.indexOf(name, body.indexOf(typeName, match.index) + typeName.length);
+            }
+        }
+    }
+
+    if (!name) {
+        match = body.match(/^\s*(?:[&*]\s*)?([A-Za-z_][A-Za-z0-9_]*)/);
+        if (!match) {
+            return undefined;
+        }
+        name = match[1];
+        relativeNameStart = body.indexOf(name, match.index);
+    }
+
+    if (CONTROL_WORDS.has(name) || PAWN_VALUE_HINT_RESERVED.has(name)) {
+        return undefined;
+    }
+
+    const nameStart = bodyOffset + relativeNameStart;
+    return {
+        name,
+        nameStart,
+        nameEnd: nameStart + name.length,
+        typeName,
+        typeStart,
+        hasStorage,
+        segment
+    };
 }
 
 function parseEnumContent(content, uri, lineNumber, contentStartCharacter, symbols, numericValues) {
@@ -2664,7 +2855,7 @@ function parseEnumContent(content, uri, lineNumber, contentStartCharacter, symbo
         }
 
         const name = match[1];
-        if (CONTROL_WORDS.has(name) || name === "enum") {
+        if (PAWN_VALUE_HINT_RESERVED.has(name) || name === "enum") {
             continue;
         }
 
@@ -2741,16 +2932,12 @@ function parseFunctionParameters(line, functionRecord, uri, lineNumber) {
     const params = line.slice(open + 1, close);
     const segments = splitTopLevelSegments(params, open + 1);
     for (const segment of segments) {
-        const left = segment.text.split("=")[0];
-        const match = left.match(/^\s*(?:(?:const)\s+)?(?:(?:[A-Za-z_][A-Za-z0-9_]*)\s*:\s*)?([A-Za-z_][A-Za-z0-9_]*)/);
-        if (!match) {
+        const item = parseVariableDeclarationSegment(segment, true);
+        if (!item || item.name === "va_args") {
             continue;
         }
 
-        const name = match[1];
-        const relativeNameIndex = left.indexOf(name, match.index);
-        const nameIndex = segment.offset + relativeNameIndex;
-        records.push(makeRecord(name, "local", uri, lineNumber, nameIndex, nameIndex + name.length));
+        records.push(makeRecord(item.name, "local", uri, lineNumber, item.nameStart, item.nameEnd));
     }
 
     return records;
@@ -3217,19 +3404,18 @@ function getReferenceContext(document, wordRange) {
 }
 
 function getFunctionDeclarationContext(line, wordRange) {
-    const match = line.match(FUNCTION_CONTEXT_RE);
-    if (!match) {
+    const header = parseFunctionHeader(line);
+    if (!header) {
         return undefined;
     }
 
-    const name = match[2];
-    const nameStart = line.indexOf(name, match.index);
+    const name = header.name;
+    const nameStart = header.nameStart;
     const cursorStart = wordRange.start.character;
     const cursorEnd = wordRange.end.character;
     const prefix = line.slice(0, nameStart);
     const suffix = line.slice(nameStart + name.length);
-    const hasDefinitionKeyword = /\b(stock|static|public|forward|native|hook|timer|ptask|task|global|foreign)\b/.test(prefix);
-    const isDefinitionLike = hasDefinitionKeyword || /\([^;]*\)\s*(?:\{|$)/.test(suffix);
+    const isDefinitionLike = header.modifiers.length > 0 || /\([^;]*\)\s*(?:\{|$)/.test(suffix);
     if (isDefinitionLike && cursorStart >= nameStart && cursorEnd <= nameStart + name.length) {
         return name;
     }
@@ -3238,15 +3424,15 @@ function getFunctionDeclarationContext(line, wordRange) {
 }
 
 function getGlobalForeignDeclarationContext(line, wordRange) {
-    const match = line.match(EXTERNAL_FUNCTION_RE);
-    if (!match) {
+    const header = parseFunctionHeader(line);
+    const keyword = header?.modifiers.find((modifier) => modifier === "global" || modifier === "foreign");
+    if (!header || !keyword) {
         return undefined;
     }
 
-    const keyword = match[1];
-    const name = match[2];
-    const keywordStart = line.indexOf(keyword, match.index);
-    const nameStart = line.indexOf(name, keywordStart + keyword.length);
+    const name = header.name;
+    const keywordStart = line.indexOf(keyword);
+    const nameStart = header.nameStart;
     const cursorStart = wordRange.start.character;
     const cursorEnd = wordRange.end.character;
     const onKeyword = cursorStart >= keywordStart && cursorEnd <= keywordStart + keyword.length;
@@ -3269,14 +3455,15 @@ function addNumericValue(map, name, kind, value, uri, lineNumber, startCharacter
 function addNumericValueRecord(map, record) {
     const current = map.get(record.name);
     if (current) {
+        current.ambiguous ||= current.value !== record.value;
         current.kind = record.kind;
-        current.value = record.value;
         current.declarations.push(record);
     } else {
         map.set(record.name, {
             name: record.name,
             kind: record.kind,
             value: record.value,
+            ambiguous: false,
             declarations: [record]
         });
     }
@@ -4334,6 +4521,14 @@ module.exports = {
         parseClassMemberDeclaration,
         parseClassVariableDeclarationItems,
         parseClassParameterDeclarations,
+        parseFunctionDefinition,
+        parseFunctionParameters,
+        parseGlobalDeclarations,
+        parseNumericConstDeclarations,
+        collectNumericValueHints,
+        buildPawnSemanticTokens,
+        PAWN_SEMANTIC_TYPES,
+        decodePawnBytes,
         getCallArity,
         getPawnClassReferenceContext,
         scanPawnTextToEntry

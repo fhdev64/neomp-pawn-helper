@@ -35,11 +35,11 @@
     "comments": {
       "patterns": [
         {
-          "name": "comment.line.double-slash.neopawn",
+          "name": "comment.line.double-slash.c",
           "match": "//.*$"
         },
         {
-          "name": "comment.block.neopawn",
+          "name": "comment.block.c",
           "begin": "/\\*",
           "end": "\\*/"
         }
@@ -48,12 +48,12 @@
     "strings": {
       "patterns": [
         {
-          "name": "string.quoted.double.neopawn",
+          "name": "string.quoted.double.c",
           "begin": "\"",
           "end": "\"",
           "patterns": [
             {
-              "name": "constant.character.escape.neopawn",
+              "name": "constant.character.escape.c",
               "match": "\\\\."
             },
             {
@@ -63,7 +63,7 @@
           ]
         },
         {
-          "name": "constant.character.neopawn",
+          "name": "constant.character.c",
           "match": "'(?:\\\\.|[^'\\\\])+'"
         }
       ]
@@ -71,14 +71,14 @@
     "preprocessor": {
       "patterns": [
         {
-          "name": "meta.preprocessor.neopawn",
+          "name": "meta.preprocessor.c",
           "begin": "^\\s*(#)\\s*([A-Za-z_][A-Za-z0-9_]*)",
           "beginCaptures": {
             "1": {
-              "name": "punctuation.definition.directive.neopawn"
+              "name": "punctuation.definition.directive.c"
             },
             "2": {
-              "name": "keyword.control.directive.neopawn"
+              "name": "keyword.control.directive.c"
             }
           },
           "end": "$"
@@ -100,24 +100,24 @@
           "match": "\\b(abstract|final)?\\s*(class)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(extends|:)\\s*([A-Za-z_][A-Za-z0-9_]*))?",
           "captures": {
             "1": {
-              "name": "storage.modifier.neopawn"
+              "name": "storage.modifier.c"
             },
             "2": {
-              "name": "storage.type.class.neopawn"
+              "name": "storage.type.class.c"
             },
             "3": {
-              "name": "entity.name.type.class.neopawn"
+              "name": "entity.name.type.class.c"
             },
             "4": {
-              "name": "storage.modifier.extends.neopawn"
+              "name": "storage.modifier.c"
             },
             "5": {
-              "name": "entity.other.inherited-class.neopawn"
+              "name": "entity.other.inherited-class.c"
             }
           }
         },
         {
-          "name": "variable.language.this.neopawn",
+          "name": "variable.language.this.c",
           "match": "\\bthis\\b"
         }
       ]
@@ -125,15 +125,15 @@
     "keywords": {
       "patterns": [
         {
-          "name": "storage.modifier.neopawn",
-          "match": "\\b(?:public|protected|private|static|stock|const|property|readonly|virtual|override|abstract|final|owned|native|forward|hook|global|foreign)\\b"
+          "name": "storage.modifier.c",
+          "match": "\\b(?:public|protected|private|static|stock|const|property|readonly|virtual|override|abstract|final|owned|native|forward|hook|global|foreign|timer|ptask|task)\\b"
         },
         {
-          "name": "keyword.control.neopawn",
-          "match": "\\b(?:if|else|for|while|do|switch|case|default|break|continue|return|goto|state|assert|base|new|delete)\\b"
+          "name": "keyword.control.c",
+          "match": "\\b(?:if|else|for|while|do|switch|case|default|break|continue|return|goto|state|assert|sizeof|defined|base|new|delete)\\b"
         },
         {
-          "name": "constant.language.neopawn",
+          "name": "constant.language.c",
           "match": "\\b(?:true|false|null)\\b"
         }
       ]
@@ -141,8 +141,8 @@
     "types": {
       "patterns": [
         {
-          "name": "storage.type.neopawn",
-          "match": "\\b(?:bool|char|float|int|void|Float|String|File|DB|DBResult)\\b"
+          "name": "storage.type.built-in.c",
+          "match": "\\b(?:bool|char|float|int|void|Float|String|File|DB|DBResult|va_args)\\b"
         }
       ]
     },
@@ -152,19 +152,19 @@
           "match": "\\b(enum)\\s+(?:[A-Za-z_][A-Za-z0-9_]*\\s*:\\s*)?([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
-              "name": "storage.type.enum.neopawn"
+              "name": "storage.type.enum.c"
             },
             "2": {
-              "name": "entity.name.type.enum.neopawn"
+              "name": "entity.name.type.enum.c"
             }
           }
         },
         {
-          "name": "entity.name.type.tag.neopawn",
-          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*:(?!:))"
+          "name": "entity.name.type.tag.c",
+          "match": "(?:\\b[A-Za-z_][A-Za-z0-9_]*|_)(?=\\s*:(?!:))"
         },
         {
-          "name": "keyword.operator.neopawn",
+          "name": "keyword.operator.c",
           "match": "(?:==|!=|<=|>=|\\+\\+|--|&&|\\|\\||<<|>>|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|[+\\-*/%&|^~!=<>?:])"
         }
       ]
@@ -172,15 +172,15 @@
     "numbers": {
       "patterns": [
         {
-          "name": "constant.numeric.hex.neopawn",
+          "name": "constant.numeric.hex.c",
           "match": "\\b0[xX][0-9A-Fa-f]+\\b"
         },
         {
-          "name": "constant.numeric.float.neopawn",
+          "name": "constant.numeric.float.c",
           "match": "\\b\\d+\\.\\d+(?:[eE][+-]?\\d+)?\\b"
         },
         {
-          "name": "constant.numeric.integer.neopawn",
+          "name": "constant.numeric.integer.c",
           "match": "\\b\\d+\\b"
         }
       ]
@@ -188,7 +188,7 @@
     "functions": {
       "patterns": [
         {
-          "name": "entity.name.function.neopawn",
+          "name": "entity.name.function.c",
           "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
         }
       ]

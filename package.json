@@ -153,7 +153,7 @@
   "scripts": {
     "check": "node --check extension.js && node --check test/extension.test.js && node --check test/workspace-index.test.js",
     "test": "node test/extension.test.js",
-    "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "package": "npx --yes @vscode/vsce@2.32.0 package --no-dependencies",
     "install:local": "powershell -ExecutionPolicy Bypass -File ./install.ps1"
   }
 }
